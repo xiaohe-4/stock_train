@@ -1,4 +1,5 @@
-# 基于Transformer的排序学习选股框架
+# THU-BDC2026-main
+基于Transformer的排序学习选股框架
 
 > 2026中国高校计算机大赛——大数据挑战赛 官方Baseline
 
@@ -13,3 +14,6 @@
 - **时序建模**：Transformer Encoder提取60个交易日序列特征
 - **股票间交互**：自定义Cross-Stock Attention模块捕捉股票横向对比关系
 - **排序学习**：Listwise + Pairwise组合损失函数，着重优化Top-5选股精度
+
+# get_stock
+获取更新股票最新交易信息；每周交易涨幅前五
