@@ -16,11 +16,15 @@ config = {
     'use_clip': True,       # 启用梯度裁剪
     'warmup_epochs': 10,    # 学习率预热轮数
 
-    'pairwise_weight': 1, # 配对损失权重
-    'base_weight': 1.0, # 非top-k样本权重
-    'top5_weight': 2.0, # top-5样本权重（应大于base_weight）
+    'pairwise_weight': 1.0,           # 配对损失权重
+    'base_weight': 1.0,               # 非top-k样本权重
+    'top5_weight': 3.0,               # top-5样本权重（加大，突出选股目标）
+    'topk_loss_weight': 0.5,          # soft top-k 收益对齐权重
+    'loss_temperature': 0.5,          # soft top-k 温度（越小越接近 hard top-k）
+    'listwise_temperature': 1.0,      # ListNet 温度
 
-    'cross_stock_layers': 3,          # 股票间交互注意力层数
+    'cross_stock_layers': 3,          # 股票间交互注意力层数（已接入模型）
+    'recent_bias_strength': 1.5,      # 时序聚合的近期偏置强度
     'early_stopping_patience': 15,    # Early Stopping 容忍轮数
     'val_months': 2,                  # 验证集使用最近 N 个月
 

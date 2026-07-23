@@ -150,7 +150,8 @@ def main():
 
 	with torch.no_grad():
 		x = torch.from_numpy(sequences_np).unsqueeze(0).to(device)  # [1, N, L, F]
-		scores = model(x).squeeze(0).detach().cpu().numpy()         # [N]
+		stock_mask = torch.ones(x.size(0), x.size(1), device=device)
+		scores = model(x, stock_mask=stock_mask).squeeze(0).detach().cpu().numpy()  # [N]
 
 	order = np.argsort(scores)[::-1]
 	ranked_stock_ids = [sequence_stock_ids[i] for i in order]
