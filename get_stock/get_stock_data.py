@@ -75,8 +75,8 @@ def get_stock_history(bs_code, start_date, end_date):
     df['振幅'] = ((df['high'] - df['low']) / df['preclose'] * 100).round(2)
     df['涨跌额'] = (df['close'] - df['preclose']).round(2)
     
-    # 转换日期格式 YYYY/M/D
-    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y/%-m/%-d')
+    # 统一日期格式为 YYYY-MM-DD
+    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
     
     # 提取纯数字股票代码（统一为6位格式，不足前面补0）
     df['code'] = df['code'].str.replace('sh.', '').str.replace('sz.', '')
@@ -103,6 +103,20 @@ def get_stock_history(bs_code, start_date, end_date):
     return df
 
 
+def parse_date_column(series):
+    """兼容 YYYY-MM-DD、YYYY/M/D、带时间戳等多种日期格式"""
+    return pd.to_datetime(series, errors='coerce')
+
+
+def normalize_date_column(df):
+    """将日期列规范为 YYYY-MM-DD 字符串"""
+    if df is None or df.empty or '日期' not in df.columns:
+        return df
+    out = df.copy()
+    out['日期'] = parse_date_column(out['日期']).dt.strftime('%Y-%m-%d')
+    return out
+
+
 def get_existing_stocks(output_path):
     """获取已经保存的股票代码列表"""
     if not os.path.exists(output_path):
@@ -116,20 +130,19 @@ def get_existing_stocks(output_path):
     return set()
 
 
-def get_stock_date_range(output_path, stock_code, start_date=None, end_date=None):
-    """获取某只股票在现有数据中的日期范围（可限定目标时间窗）"""
-    if not os.path.exists(output_path):
+def get_stock_date_range_from_df(df, stock_code, start_date=None, end_date=None):
+    """从内存DataFrame获取某只股票的日期范围（可限定目标时间窗）"""
+    if df is None or df.empty:
         return None, None
     try:
-        df = pd.read_csv(output_path)
         if '股票代码' not in df.columns or '日期' not in df.columns:
             return None, None
         stock_df = df[df['股票代码'].astype(str).str.zfill(6) == stock_code].copy()
         if len(stock_df) == 0:
             return None, None
 
-        # 解析日期
-        stock_df.loc[:, '日期_dt'] = pd.to_datetime(stock_df['日期'], format='%Y/%m/%d', errors='coerce')
+        # 解析日期（兼容现有多种格式）
+        stock_df.loc[:, '日期_dt'] = parse_date_column(stock_df['日期'])
         stock_df = stock_df.dropna(subset=['日期_dt'])
         if len(stock_df) == 0:
             return None, None
@@ -145,6 +158,18 @@ def get_stock_date_range(output_path, stock_code, start_date=None, end_date=None
             return None, None
 
         return stock_df['日期_dt'].min().strftime('%Y-%m-%d'), stock_df['日期_dt'].max().strftime('%Y-%m-%d')
+    except Exception as e:
+        print(f"  警告: 读取股票 {stock_code} 现有日期范围失败: {e}")
+        return None, None
+
+
+def get_stock_date_range(output_path, stock_code, start_date=None, end_date=None):
+    """获取某只股票在现有数据中的日期范围（可限定目标时间窗）"""
+    if not os.path.exists(output_path):
+        return None, None
+    try:
+        df = pd.read_csv(output_path)
+        return get_stock_date_range_from_df(df, stock_code, start_date, end_date)
     except Exception as e:
         print(f"  警告: 读取股票 {stock_code} 现有日期范围失败: {e}")
         return None, None
@@ -169,12 +194,13 @@ def filter_data_by_date_range(df, start_date, end_date):
         return df
 
     filtered = df.copy()
-    filtered.loc[:, '日期_dt'] = pd.to_datetime(filtered['日期'], format='%Y/%m/%d', errors='coerce')
+    filtered.loc[:, '日期_dt'] = parse_date_column(filtered['日期'])
     filtered = filtered.dropna(subset=['日期_dt'])
 
     start_dt = pd.to_datetime(start_date)
     end_dt = pd.to_datetime(end_date)
     filtered = filtered[(filtered['日期_dt'] >= start_dt) & (filtered['日期_dt'] <= end_dt)].copy()
+    filtered['日期'] = filtered['日期_dt'].dt.strftime('%Y-%m-%d')
     filtered = filtered.drop(columns=['日期_dt'])
     return filtered
 
@@ -185,6 +211,7 @@ def merge_stock_data(existing_df, new_df, stock_code):
         return existing_df
     
     # 统一股票代码为6位字符串格式用于比较
+    existing_df = existing_df.copy()
     existing_df['股票代码_str'] = existing_df['股票代码'].astype(str).str.zfill(6)
     
     # 从现有数据中移除该股票的旧数据
@@ -198,18 +225,19 @@ def merge_stock_data(existing_df, new_df, stock_code):
         # 将日期转为datetime用于比较和去重
         stock_existing_copy = stock_existing.copy()
         new_df_copy = new_df.copy()
-        stock_existing_copy['日期_dt'] = pd.to_datetime(stock_existing_copy['日期'], format='%Y/%m/%d')
-        new_df_copy['日期_dt'] = pd.to_datetime(new_df_copy['日期'], format='%Y/%m/%d')
+        stock_existing_copy['日期_dt'] = parse_date_column(stock_existing_copy['日期'])
+        new_df_copy['日期_dt'] = parse_date_column(new_df_copy['日期'])
         
         # 合并并去重
         combined = pd.concat([stock_existing_copy, new_df_copy], ignore_index=True)
         combined = combined.drop_duplicates(subset=['日期_dt'], keep='last')
         combined = combined.sort_values('日期_dt')
         
-        # 删除临时列
+        # 统一日期格式后删除临时列
+        combined['日期'] = combined['日期_dt'].dt.strftime('%Y-%m-%d')
         combined = combined.drop(columns=['日期_dt'])
     else:
-        combined = new_df
+        combined = normalize_date_column(new_df)
     
     # 重新组装：其他股票数据 + 该股票合并后的数据
     result = pd.concat([other_df, combined], ignore_index=True)
@@ -221,7 +249,8 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
     
     start_date = "2024-01-01"
-    end_date = "2026-06-26"
+    # 拉取至当前日期（日前）
+    end_date = datetime.now().strftime('%Y-%m-%d')
     
     output_path = os.path.join(save_dir, "stock_data.csv")
     
@@ -275,8 +304,10 @@ def main():
             stock_name = row.get('code_name', '')
             pure_code = row.get('纯代码', '')
             
-            # 检查该股票是否已存在数据
-            existing_min_date, existing_max_date = get_stock_date_range(output_path, pure_code, start_date, end_date)
+            # 检查该股票是否已存在数据（优先使用内存中的现有数据，避免反复读盘）
+            existing_min_date, existing_max_date = get_stock_date_range_from_df(
+                existing_df, pure_code, start_date, end_date
+            )
             
             if existing_min_date and existing_max_date:
                 # 已有数据，检查是否需要增量
