@@ -22,6 +22,7 @@ config = {
 
     'cross_stock_layers': 3,          # 股票间交互注意力层数
     'early_stopping_patience': 15,    # Early Stopping 容忍轮数
+    'val_months': 2,                  # 验证集使用最近 N 个月
 
     'output_dir': f'./model/{sequence_length}_{feature_num}',
     'data_path': './data',
