@@ -102,77 +102,103 @@ def preprocess_val_data(df, stockid2idx=None):
 # 加权的排序损失函数
 class WeightedRankingLoss(nn.Module):
     """
-    组合的加权排序损失函数，着重强调top-k的样本。
+    Top-k 导向的组合排序损失：
+    - ListNet listwise：对齐预测分布与标签分布
+    - 加权 pairwise：强化 top-k vs 非 top-k 的相对序
+    - soft top-k 收益对齐：直接逼近赛事指标（预测 Top-k 收益和）
     """
-    def __init__(self, temperature=1.0, k=5, weight_factor=2.0, pairwise_weight=1, base_weight=1.0):
-        super(WeightedRankingLoss, self).__init__()
+
+    def __init__(
+        self,
+        temperature=1.0,
+        k=5,
+        weight_factor=2.0,
+        pairwise_weight=1.0,
+        base_weight=1.0,
+        topk_loss_weight=0.5,
+        listwise_temperature=None,
+    ):
+        super().__init__()
         self.temperature = temperature
+        self.listwise_temperature = (
+            listwise_temperature if listwise_temperature is not None else temperature
+        )
         self.k = k
         self.weight_factor = weight_factor
         self.pairwise_weight = pairwise_weight
         self.base_weight = base_weight
+        self.topk_loss_weight = topk_loss_weight
 
     def listwise_loss(self, y_pred, y_true, weights):
-        """加权的Listwise损失 (KL散度 + Cross Entropy)"""
-        
-        pred_probs = F.softmax(y_pred / self.temperature, dim=1)
-        target_probs = F.softmax(y_true / self.temperature, dim=1)
-
-        # 加权 Cross Entropy（原实现未使用 weights）
+        """加权 ListNet：用权重放大 top-k 的分布匹配。"""
+        pred_probs = F.softmax(y_pred / self.listwise_temperature, dim=1)
+        target_probs = F.softmax(y_true / self.listwise_temperature, dim=1)
         weighted_ce = -(target_probs * torch.log(pred_probs + 1e-12) * weights)
-        ce_loss = (weighted_ce.sum(dim=1) / (weights.sum(dim=1) + 1e-12)).mean()
-        
-        return ce_loss
+        return (weighted_ce.sum(dim=1) / (weights.sum(dim=1) + 1e-12)).mean()
 
     def pairwise_loss(self, y_pred, y_true, weights):
-        """加权的Pairwise损失"""
-        batch_size, num_items = y_pred.size()
-        
+        """
+        加权 pairwise：
+        优先拉开 top-k 与非 top-k 的分数差距，弱化无关对的噪声。
+        """
         pred_diff = y_pred.unsqueeze(2) - y_pred.unsqueeze(1)
         true_diff = y_true.unsqueeze(2) - y_true.unsqueeze(1)
-        
-        # 只考虑真实标签不同的项目对
-        mask = (true_diff != 0).float()
-        
-        # 创建权重矩阵
-        # 如果一对(i, j)中，i或j是关键样本，则权重更高
-        weight_matrix = weights.unsqueeze(2) + weights.unsqueeze(1)
-        # weight_matrix = torch.where(weight_matrix > 2.0, self.weight_factor, 1.0)
-        
-        pairwise_loss = torch.sigmoid(-pred_diff * torch.sign(true_diff))
-        
-        # 应用mask和权重
-        weighted_loss = pairwise_loss * mask * weight_matrix
-        
-        num_pairs = mask.sum(dim=[1, 2]).clamp(min=1)
-        loss = (weighted_loss.sum(dim=[1, 2]) / num_pairs).mean()
-        
-        return loss
-        
-    def forward(self, y_pred, y_true):
+        pair_mask = (true_diff != 0).float()
+
+        # i/j 任一方是高权样本时，该 pair 权重更大
+        weight_matrix = 0.5 * (weights.unsqueeze(2) + weights.unsqueeze(1))
+        # top-k 对非 top-k 的 pair 额外放大
+        is_high = (weights >= self.weight_factor).float()
+        cross_boost = 1.0 + (is_high.unsqueeze(2) * (1.0 - is_high).unsqueeze(1))
+        weight_matrix = weight_matrix * cross_boost
+
+        pair_loss = torch.sigmoid(-pred_diff * torch.sign(true_diff))
+        weighted_loss = pair_loss * pair_mask * weight_matrix
+        num_pairs = (pair_mask * weight_matrix).sum(dim=[1, 2]).clamp(min=1.0)
+        return (weighted_loss.sum(dim=[1, 2]) / num_pairs).mean()
+
+    def soft_topk_return_loss(self, y_pred, y_true):
+        """
+        Soft Top-k 收益对齐：用可微 soft selection 逼近“选中 Top-k 的真实收益和”。
+        损失 = - soft_selected_return_sum / (|max_possible| + eps)
+        """
+        batch_size, num_items = y_pred.size()
+        k = min(self.k, num_items)
+        # 温度越小越接近 hard top-k
+        soft_temp = max(self.temperature * 0.5, 0.1)
+        soft_weights = F.softmax(y_pred / soft_temp, dim=1)
+        # 将概率质量集中到约 k 个位置：k * softmax
+        soft_selection = (k * soft_weights).clamp(max=1.0)
+        soft_return_sum = (soft_selection * y_true).sum(dim=1)
+
+        true_topk_sum = torch.topk(y_true, k, dim=1).values.sum(dim=1)
+        # 最大化 soft 收益相对理论 Top-k 收益的比例
+        ratio = soft_return_sum / (true_topk_sum.abs() + 1e-6)
+        return (-ratio).mean()
+
+    def forward(self, y_pred, y_true, y_return=None):
         """
         y_pred: [batch, num_items]
-        y_true: [batch, num_items] (真实涨跌幅)
+        y_true: [batch, num_items]（相关性得分，用于 listwise/pairwise）
+        y_return: [batch, num_items]（真实收益，用于 soft top-k；默认回退到 y_true）
         """
         batch_size, num_items = y_true.size()
         k = min(self.k, num_items)
 
-        # 1. 识别 top-k 的样本
         _, top_indices = torch.topk(y_true, k, dim=1)
-        
-        # 2. 创建权重向量
         weights = torch.full_like(y_true, fill_value=self.base_weight)
-        for i in range(batch_size):
-            weights[i, top_indices[i]] = self.weight_factor
-            
-        # 3. 计算加权损失
+        weights.scatter_(1, top_indices, self.weight_factor)
+
         listwise = self.listwise_loss(y_pred, y_true, weights)
         pairwise = self.pairwise_loss(y_pred, y_true, weights)
-        
-        # 组合两种损失
-        total_loss = listwise + self.pairwise_weight * pairwise
-        
-        return total_loss
+        return_target = y_return if y_return is not None else y_true
+        topk_align = self.soft_topk_return_loss(y_pred, return_target)
+
+        return (
+            listwise
+            + self.pairwise_weight * pairwise
+            + self.topk_loss_weight * topk_align
+        )
 
 def calculate_ranking_metrics(y_pred, y_true, masks, k=5):
     """计算新的评估指标：Top 5 收益之和，以及与理论最高值和随机值的比值"""
@@ -323,15 +349,14 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
         
         optimizer.zero_grad()
         
-        # 模型预测
-        outputs = model(sequences)  # [batch, max_stocks] 预测分数
+        # 模型预测（传入 mask，避免 padding 股票参与横截面注意力）
+        outputs = model(sequences, stock_mask=masks)  # [batch, max_stocks]
         
-        # 应用mask，只考虑有效股票
-        masked_outputs = outputs * masks + (1 - masks) * (-1e9)  # 无效位置设为很小的值
+        masked_outputs = outputs
         masked_targets = targets * masks
-        masked_relevance = relevance.float() * masks  # 使用预处理好的相关性得分
+        # 联合使用相关性得分与真实收益：相关性稳住排序形状，收益对齐赛事指标
+        masked_relevance = relevance.float() * masks
         
-        # 计算损失（只对有效股票计算）
         batch_loss = None
         batch_size = sequences.size(0)
         
@@ -345,14 +370,17 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
             if valid_indices.dim() == 0:
                 valid_indices = valid_indices.unsqueeze(0)
             
-            # 获取有效股票的预测值和预处理好的相关性得分
             valid_pred = masked_outputs[i][valid_indices]
             valid_relevance = masked_relevance[i][valid_indices]
+            valid_targets = masked_targets[i][valid_indices]
             
             if len(valid_pred) > 1:
-                # 直接使用预处理好的相关性得分，无需重新计算
-                loss = criterion(valid_pred.unsqueeze(0), valid_relevance.unsqueeze(0))
-                batch_loss = batch_loss + loss if isinstance(batch_loss, torch.Tensor) else loss
+                loss_rank = criterion(
+                    valid_pred.unsqueeze(0),
+                    valid_relevance.unsqueeze(0),
+                    y_return=valid_targets.unsqueeze(0),
+                )
+                batch_loss = batch_loss + loss_rank if isinstance(batch_loss, torch.Tensor) else loss_rank
         
         if batch_loss is not None:
             batch_loss = batch_loss / batch_size
@@ -365,7 +393,6 @@ def train_ranking_model(model, dataloader, criterion, optimizer, device, epoch, 
             
             total_loss += batch_loss.item()
             
-            # 计算评估指标
             with torch.no_grad():
                 metrics = calculate_ranking_metrics(masked_outputs, masked_targets, masks, k=5)
                 for k, v in metrics.items():
@@ -398,11 +425,10 @@ def evaluate_ranking_model(model, dataloader, criterion, device, writer, epoch):
             targets = batch['targets'].to(device)
             masks = batch['masks'].to(device)
             
-            # 模型预测
-            outputs = model(sequences)
+            # 模型预测（传入 mask）
+            outputs = model(sequences, stock_mask=masks)
             
-            # 应用mask
-            masked_outputs = outputs * masks + (1 - masks) * (-1e9)
+            masked_outputs = outputs
             masked_targets = targets * masks
             
             # 计算损失
@@ -425,10 +451,16 @@ def evaluate_ranking_model(model, dataloader, criterion, device, writer, epoch):
                 if len(valid_pred) > 1:
                     _, sorted_indices = torch.sort(valid_true, descending=True)
                     relevance_scores = torch.zeros_like(valid_true, requires_grad=False)
-                    relevance_scores[sorted_indices] = torch.arange(len(valid_true), 0, -1, device=device, dtype=torch.float32)
+                    relevance_scores[sorted_indices] = torch.arange(
+                        len(valid_true), 0, -1, device=device, dtype=torch.float32
+                    )
                     relevance_scores = relevance_scores.detach()
                     
-                    loss = criterion(valid_pred.unsqueeze(0), relevance_scores.unsqueeze(0))
+                    loss = criterion(
+                        valid_pred.unsqueeze(0),
+                        relevance_scores.unsqueeze(0),
+                        y_return=valid_true.unsqueeze(0),
+                    )
                     batch_loss = batch_loss + loss if batch_loss is not None else loss
             
             if batch_loss is not None:
@@ -492,7 +524,8 @@ def predict_top_stocks(model, data, features, sequence_length, scaler, stockid2i
     
     with torch.no_grad():
         # 模型预测
-        outputs = model(sequences)  # [1, num_stocks]
+        stock_mask = torch.ones(sequences.size(0), sequences.size(1), device=device)
+        outputs = model(sequences, stock_mask=stock_mask)  # [1, num_stocks]
         scores = outputs.squeeze().cpu().numpy()  # [num_stocks]
         
         # 获取排名前top_k的股票
@@ -649,11 +682,13 @@ def main():
     # 7. 损失函数和优化器
     criterion = WeightedRankingLoss(
         k=5,
-        temperature=1.0,
+        temperature=config.get('loss_temperature', 0.5),
+        listwise_temperature=config.get('listwise_temperature', 1.0),
         weight_factor=config['top5_weight'],
         pairwise_weight=config['pairwise_weight'],
-        base_weight=config.get('base_weight', 1.0)
-    )  # 使用加权排序损失
+        base_weight=config.get('base_weight', 1.0),
+        topk_loss_weight=config.get('topk_loss_weight', 0.5),
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
     warmup_epochs = config.get('warmup_epochs', 10)
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
