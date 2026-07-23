@@ -523,14 +523,17 @@ def save_predictions(top_stocks, output_path):
     print(f"预测结果已保存到: {output_path}")
 
 
-def split_train_val_by_last_month(df, sequence_length):
-    """按最后一个月做验证集划分，并为验证集补充序列上下文。"""
+def split_train_val_by_last_month(df, sequence_length, val_months=None):
+    """按最近 val_months 个月做验证集划分，并为验证集补充序列上下文。"""
+    if val_months is None:
+        val_months = config.get('val_months', 2)
+
     df = df.copy()
     df['日期'] = pd.to_datetime(df['日期'])
     df = df.sort_values(['日期', '股票代码']).reset_index(drop=True)
 
     last_date = df['日期'].max()
-    val_start = (last_date - pd.DateOffset(months=2)).normalize()
+    val_start = (last_date - pd.DateOffset(months=val_months)).normalize()
 
     # 验证集需要保留前 sequence_length-1 个交易日作为序列上下文，
     # 这样第一个验证样本的窗口结束日就可以落在 val_start。
@@ -541,7 +544,7 @@ def split_train_val_by_last_month(df, sequence_length):
 
     print(f"全量数据范围: {df['日期'].min().date()} 到 {last_date.date()}")
     print(f"训练集范围: {train_df['日期'].min().date()} 到 {train_df['日期'].max().date()}")
-    print(f"验证集目标范围(最后一个月): {val_start.date()} 到 {last_date.date()}")
+    print(f"验证集目标范围(最近{val_months}个月): {val_start.date()} 到 {last_date.date()}")
     print(f"验证集实际取数范围(含序列上下文): {val_df['日期'].min().date()} 到 {val_df['日期'].max().date()}")
 
     # 恢复为字符串，保持与原流程一致
@@ -571,7 +574,11 @@ def main():
     # 1. 数据加载
     data_file = os.path.join(data_path, 'train.csv')
     full_df = pd.read_csv(data_file)
-    train_df, val_df, val_start = split_train_val_by_last_month(full_df, config['sequence_length'])
+    train_df, val_df, val_start = split_train_val_by_last_month(
+        full_df,
+        config['sequence_length'],
+        val_months=config.get('val_months', 2),
+    )
     
     # 获取所有股票ID，建立映射
     all_stock_ids = full_df['股票代码'].unique()
