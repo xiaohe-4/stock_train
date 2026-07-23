@@ -50,13 +50,16 @@ top5 = (
 
 # 生成 Markdown
 weeks = sorted(res_df['周'].unique())
+data_start = df['日期'].min().strftime('%Y-%m-%d')
+data_end = df['日期'].max().strftime('%Y-%m-%d')
+stock_count = df['股票代码'].nunique()
 
 lines = [
-    '# 2024年1月起每周涨幅前五股票',
+    f'# {data_start[:4]}年{int(data_start[5:7])}月起每周涨幅前五股票',
     '',
-    '> 数据范围：2024-01-02 至 2026-06-18',
+    f'> 数据范围：{data_start} 至 {data_end}',
     '> 涨幅计算：(周末开盘价 - 周初开盘价) / 周初开盘价 × 100%',
-    '> 股票数量：300只',
+    f'> 股票数量：{stock_count}只',
     '',
 ]
 
