@@ -25,8 +25,27 @@ def login():
 
 def logout():
     """登出baostock"""
-    bs.logout()
+    try:
+        bs.logout()
+    except Exception:
+        pass
     print("baostock已登出")
+
+
+def ensure_login(force=False):
+    """强制重新登录，避免长任务中会话过期。"""
+    if force:
+        try:
+            bs.logout()
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return login()
+
+
+def _is_login_error(msg: str) -> bool:
+    msg = str(msg)
+    return ('未登录' in msg) or ('login' in msg.lower())
 
 
 def get_hs300_stocks():
@@ -36,7 +55,11 @@ def get_hs300_stocks():
     rs = bs.query_hs300_stocks()
     
     if rs.error_code != '0':
-        raise Exception(f"获取成分股失败: {rs.error_msg}")
+        if _is_login_error(rs.error_msg):
+            ensure_login(force=True)
+            rs = bs.query_hs300_stocks()
+        if rs.error_code != '0':
+            raise Exception(f"获取成分股失败: {rs.error_msg}")
     
     stocks = []
     while (rs.error_code == '0') & rs.next():
@@ -47,14 +70,18 @@ def get_hs300_stocks():
     return df
 
 
-def get_stock_history(bs_code, start_date, end_date):
-    """获取单只股票历史数据"""
+def get_stock_history(bs_code, start_date, end_date, _retried=False):
+    """获取单只股票历史数据；若会话过期则自动重登并重试一次。"""
     rs = bs.query_history_k_data_plus(bs_code,
         "date,code,open,high,low,close,preclose,volume,amount,turn,pctChg",
         start_date=start_date, end_date=end_date,
         frequency="d", adjustflag="1")  # adjustflag="1"表示后复权
     
     if rs.error_code != '0':
+        if (not _retried) and _is_login_error(rs.error_msg):
+            print("  检测到登录失效，正在重新登录...")
+            ensure_login(force=True)
+            return get_stock_history(bs_code, start_date, end_date, _retried=True)
         raise Exception(f"查询失败: {rs.error_msg}")
     
     data_list = []
@@ -75,12 +102,12 @@ def get_stock_history(bs_code, start_date, end_date):
     df['振幅'] = ((df['high'] - df['low']) / df['preclose'] * 100).round(2)
     df['涨跌额'] = (df['close'] - df['preclose']).round(2)
     
-    # 转换日期格式 YYYY/M/D
-    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y/%-m/%-d')
+    # 统一为 ISO 日期，避免 Windows 下 %-m 无效，并与划分/训练脚本一致
+    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
     
     # 提取纯数字股票代码（统一为6位格式，不足前面补0）
-    df['code'] = df['code'].str.replace('sh.', '').str.replace('sz.', '')
-    df['code'] = df['code'].str.zfill(6)
+    df['code'] = df['code'].astype(str).str.replace('sh.', '', regex=False).str.replace('sz.', '', regex=False)
+    df['code'] = df['code'].str.replace(r'\.0$', '', regex=True).str.zfill(6)
     
     # 重命名列
     df = df.rename(columns={
@@ -103,15 +130,33 @@ def get_stock_history(bs_code, start_date, end_date):
     return df
 
 
+def normalize_stock_codes(df):
+    """把股票代码统一成 6 位字符串，避免被读成 float 变成 600000.0。"""
+    if df is None or df.empty or '股票代码' not in df.columns:
+        return df
+    out = df.copy()
+    out['股票代码'] = (
+        out['股票代码'].astype(str)
+        .str.replace(r'\.0$', '', regex=True)
+        .str.replace('sh.', '', regex=False)
+        .str.replace('sz.', '', regex=False)
+        .str.zfill(6)
+    )
+    if '日期' in out.columns:
+        out['日期'] = pd.to_datetime(out['日期'], format='mixed', errors='coerce').dt.strftime('%Y-%m-%d')
+    return out
+
+
 def get_existing_stocks(output_path):
     """获取已经保存的股票代码列表"""
     if not os.path.exists(output_path):
         return set()
     try:
-        df = pd.read_csv(output_path)
+        df = pd.read_csv(output_path, dtype={'股票代码': str})
         if '股票代码' in df.columns and len(df) > 0:
+            df = normalize_stock_codes(df)
             return set(df['股票代码'].unique())
-    except:
+    except Exception:
         pass
     return set()
 
@@ -121,15 +166,16 @@ def get_stock_date_range(output_path, stock_code, start_date=None, end_date=None
     if not os.path.exists(output_path):
         return None, None
     try:
-        df = pd.read_csv(output_path)
+        df = pd.read_csv(output_path, dtype={'股票代码': str})
         if '股票代码' not in df.columns or '日期' not in df.columns:
             return None, None
-        stock_df = df[df['股票代码'].astype(str).str.zfill(6) == stock_code].copy()
+        df = normalize_stock_codes(df)
+        stock_df = df[df['股票代码'] == stock_code].copy()
         if len(stock_df) == 0:
             return None, None
 
         # 解析日期
-        stock_df.loc[:, '日期_dt'] = pd.to_datetime(stock_df['日期'], format='%Y/%m/%d', errors='coerce')
+        stock_df.loc[:, '日期_dt'] = pd.to_datetime(stock_df['日期'], format='mixed', errors='coerce')
         stock_df = stock_df.dropna(subset=['日期_dt'])
         if len(stock_df) == 0:
             return None, None
@@ -169,12 +215,14 @@ def filter_data_by_date_range(df, start_date, end_date):
         return df
 
     filtered = df.copy()
-    filtered.loc[:, '日期_dt'] = pd.to_datetime(filtered['日期'], format='%Y/%m/%d', errors='coerce')
+    filtered = normalize_stock_codes(filtered)
+    filtered.loc[:, '日期_dt'] = pd.to_datetime(filtered['日期'], format='mixed', errors='coerce')
     filtered = filtered.dropna(subset=['日期_dt'])
 
     start_dt = pd.to_datetime(start_date)
     end_dt = pd.to_datetime(end_date)
     filtered = filtered[(filtered['日期_dt'] >= start_dt) & (filtered['日期_dt'] <= end_dt)].copy()
+    filtered['日期'] = filtered['日期_dt'].dt.strftime('%Y-%m-%d')
     filtered = filtered.drop(columns=['日期_dt'])
     return filtered
 
@@ -198,8 +246,8 @@ def merge_stock_data(existing_df, new_df, stock_code):
         # 将日期转为datetime用于比较和去重
         stock_existing_copy = stock_existing.copy()
         new_df_copy = new_df.copy()
-        stock_existing_copy['日期_dt'] = pd.to_datetime(stock_existing_copy['日期'], format='%Y/%m/%d')
-        new_df_copy['日期_dt'] = pd.to_datetime(new_df_copy['日期'], format='%Y/%m/%d')
+        stock_existing_copy['日期_dt'] = pd.to_datetime(stock_existing_copy['日期'], errors='coerce')
+        new_df_copy['日期_dt'] = pd.to_datetime(new_df_copy['日期'], errors='coerce')
         
         # 合并并去重
         combined = pd.concat([stock_existing_copy, new_df_copy], ignore_index=True)
@@ -221,7 +269,8 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
     
     start_date = "2024-01-01"
-    end_date = "2026-03-15"
+    # 用最近交易日作为终点，避免周末/非交易日导致“永远差一天”反复增量
+    end_date = "2026-07-31"
     
     output_path = os.path.join(save_dir, "stock_data.csv")
     
@@ -249,7 +298,7 @@ def main():
         existing_df = None
         if os.path.exists(output_path) and len(existing_stocks) > 0:
             try:
-                existing_df = pd.read_csv(output_path)
+                existing_df = pd.read_csv(output_path, dtype={'股票代码': str})
                 raw_len = len(existing_df)
                 existing_df = filter_data_by_date_range(existing_df, start_date, end_date)
                 filtered_len = len(existing_df)
@@ -260,7 +309,13 @@ def main():
                 print(f"  警告: 读取现有数据失败: {e}")
         
         # 准备处理所有股票（统一为6位字符串格式）
-        hs300_df['纯代码'] = hs300_df['code'].str.replace('sh.', '').str.replace('sz.', '').str.zfill(6)
+        hs300_df['纯代码'] = (
+            hs300_df['code'].astype(str)
+            .str.replace('sh.', '', regex=False)
+            .str.replace('sz.', '', regex=False)
+            .str.zfill(6)
+        )
+        relogin_every = 40  # 定期重登，防止会话过期
         
         # 统计信息
         failed_stocks = []
@@ -320,29 +375,63 @@ def main():
                     if existing_df is not None and len(existing_df) > 0:
                         # 增量更新：合并数据并保持同一股票相邻
                         existing_df = merge_stock_data(existing_df, new_data, pure_code)
-                        # 立即写回文件
+                        existing_df = normalize_stock_codes(existing_df)
+                        # 立即写回文件（股票代码按字符串写出，避免变成 600000.0）
                         existing_df.to_csv(output_path, index=False, encoding='utf-8-sig')
                         incremental_count += 1
                     else:
                         # 首次写入
+                        new_data = normalize_stock_codes(new_data)
                         new_data.to_csv(output_path, index=False, encoding='utf-8-sig')
                         existing_df = new_data
                         new_stock_count += 1
                     
                     total_new_records += len(new_data)
                     success_count += 1
-                    print(f"  ✓ 获取成功，新增 {len(new_data)} 条记录")
+                    print(f"  [OK] 获取成功，新增 {len(new_data)} 条记录")
                 else:
-                    print(f"  ✗ 无新数据")
+                    print(f"  [SKIP] 无新数据")
                     
             except Exception as e:
-                print(f"  ✗ 失败: {e}")
+                if _is_login_error(e):
+                    print("  检测到登录失效，正在重新登录后重试当前股票...")
+                    try:
+                        ensure_login(force=True)
+                        # 简单重试一次当前股票的全量/增量区间
+                        all_new_data = []
+                        for fetch_start, fetch_end, period_name in fetch_ranges:
+                            stock_data = get_stock_history(bs_code, fetch_start, fetch_end)
+                            if stock_data is not None and not stock_data.empty:
+                                all_new_data.append(stock_data)
+                        if all_new_data:
+                            new_data = pd.concat(all_new_data, ignore_index=True)
+                            if existing_df is not None and len(existing_df) > 0:
+                                existing_df = normalize_stock_codes(merge_stock_data(existing_df, new_data, pure_code))
+                                existing_df.to_csv(output_path, index=False, encoding='utf-8-sig')
+                                incremental_count += 1
+                            else:
+                                new_data = normalize_stock_codes(new_data)
+                                new_data.to_csv(output_path, index=False, encoding='utf-8-sig')
+                                existing_df = new_data
+                                new_stock_count += 1
+                            total_new_records += len(new_data)
+                            success_count += 1
+                            print(f"  [OK] 重试成功，新增 {len(new_data)} 条记录")
+                            continue
+                    except Exception as retry_e:
+                        print(f"  [FAIL] 重试仍失败: {retry_e}")
+                        failed_stocks.append((bs_code, stock_name))
+                        continue
+                print(f"  [FAIL] 失败: {e}")
                 failed_stocks.append((bs_code, stock_name))
             
-            # 每10只成功获取的股票暂停一下
+            # 每10只成功获取的股票暂停一下；每 relogin_every 只强制重登
             if success_count > 0 and success_count % 10 == 0:
                 print(f"\n  --- 已处理 {success_count} 只，暂停2秒 ---")
                 time.sleep(2)
+            if success_count > 0 and success_count % relogin_every == 0:
+                print(f"\n  --- 已成功 {success_count} 只，主动重新登录 ---")
+                ensure_login(force=True)
         
         # 显示结果
         print("\n" + "=" * 60)
@@ -365,7 +454,7 @@ def main():
                 # 验证同一股票数据是否相邻
                 stock_blocks = df.groupby('股票代码').apply(lambda x: x.index.max() - x.index.min() + 1).sum()
                 if stock_blocks == len(df):
-                    print("  - 数据组织: ✓ 同一股票数据相邻")
+                    print("  - 数据组织: [OK] 同一股票数据相邻")
                 else:
                     print(f"  - 数据组织: 警告，股票数据块总长度({stock_blocks})与总行数({len(df)})不一致")
                 

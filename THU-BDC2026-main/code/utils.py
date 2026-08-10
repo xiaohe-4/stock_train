@@ -203,10 +203,10 @@ def engineer_features(df):
         features.append(slope / (close + 1e-12))
         feature_names.append(f'BETA{w}')
         
-        # R-squared can be calculated as CORREL^2
-        time_period_series = pd.Series(range(w), index=close.index[:w])
-        rolling_corr = close.rolling(w).corr(time_period_series)
-        rsquare = rolling_corr**2
+        # R-squared: corr(close, time)^2，时间索引必须与全序列对齐
+        time_idx = pd.Series(np.arange(len(close), dtype=float), index=close.index)
+        rolling_corr = close.rolling(w).corr(time_idx)
+        rsquare = rolling_corr ** 2
         features.append(rsquare)
         feature_names.append(f'RSQR{w}')
 
@@ -547,10 +547,7 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
     data = data.dropna(subset=['label'])
     
     # 3. 为每只股票生成所有滑动窗口
-    # 仅保留满足以下条件的 end_date：
-    # - 历史窗口长度满足 sequence_length
-    # - end_date 之后存在 5 条未来数据
-    # - 这 5 条未来数据在自然日上连续（任意节假日/周末导致的日期跳跃都会被过滤）
+    # 仅保留：历史窗口长度满足 sequence_length，且 end_date 后仍有 5 个交易日标签
     all_windows = []  # 每个元素: (end_date, stock_code, sequence, target)
 
     print("Step 1: 为每只股票生成滑动窗口...")
@@ -564,26 +561,21 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
         feature_values = group[features].values.astype(np.float32)  # (T, F)
         labels = group['label'].values.astype(np.float32)           # (T,)
         dates = group['datetime'].values                            # (T,)
-        dates_day = group['datetime'].values.astype('datetime64[D]')
 
         # 生成滑动窗口：从第 sequence_length-1 行开始（0-indexed）
+        # 只需保证有未来 5 个交易日（与 label=open_t5/open_t1 及赛方评分一致），
+        # 不再要求自然日连续（周末/节假日会导致几乎只剩周五样本）。
         num_windows = len(group) - sequence_length + 1
         n = len(group)
         for i in range(num_windows):
             end_idx = i + sequence_length - 1
 
-            # 需要有未来 5 条数据
+            # 需要有未来 5 个交易日数据用于构建标签
             if end_idx + 5 >= n:
                 continue
 
-            # 未来 5 条数据日期必须连续（自然日相邻）
-            future_dates = dates_day[end_idx + 1:end_idx + 6]
-            future_diffs = np.diff(future_dates).astype(np.int64)
-            if not np.all(future_diffs == 1):
-                continue
-
             seq = feature_values[i : i + sequence_length]   # (L, F)
-            target = labels[end_idx]                        # label 对应窗口最后一天的次日涨跌幅
+            target = labels[end_idx]                        # label 对应窗口结束日的未来收益
             end_date = dates[end_idx]                       # 窗口结束日期（即预测日）
             all_windows.append((end_date, stock_code, seq, target))
 
@@ -612,8 +604,11 @@ def create_ranking_dataset_vectorized(data, features, sequence_length, ranking_d
         
         # 提取数据
         day_seqs = np.stack(group['seq'].values)          # (N, L, F)
-        day_targets = group['target'].values              # (N,)
+        day_targets = group['target'].values.astype(np.float32)  # (N,)
         day_stocks = group['stock_code'].tolist()         # [str]
+
+        # 截面去均值：学相对强弱，削弱大盘 beta 噪声（排序任务更稳）
+        day_targets = day_targets - float(day_targets.mean())
 
         # 计算 relevance（与原逻辑一致）
         sorted_indices = np.argsort(day_targets)[::-1]

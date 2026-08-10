@@ -64,9 +64,11 @@ except Exception as e:
     write_failed_score()
     sys.exit(0)
 
-test_data = test_data[['股票代码', '日期', '开盘', '收盘']]
+test_data = test_data[['股票代码', '日期', '开盘', '收盘']].copy()
+test_data['股票代码'] = test_data['股票代码'].astype(str).str.zfill(6)
 # 读取输出数据
 output_data = raw_output_data.rename(columns={'stock_id': '股票代码', 'weight': '权重'})
+output_data['股票代码'] = output_data['股票代码'].astype(str).str.zfill(6)
 
 required_columns = {'股票代码', '权重'}
 if not required_columns.issubset(output_data.columns):
