@@ -36,9 +36,9 @@ uv sync
 
 每只股票使用过去 30 个交易日的特征序列。监督标签为未来 5 日开盘到开盘收益：
 
-$$
-r_i = \frac{\mathrm{open}_{t+5} - \mathrm{open}_{t+1}}{\mathrm{open}_{t+1}}
-$$
+```text
+未来 5 日收益 r_i = (第 t+5 日开盘价 - 第 t+1 日开盘价) / 第 t+1 日开盘价
+```
 
 标签截断在训练集 1%～99% 分位数之间，以减弱异常价格的影响。
 
@@ -80,12 +80,10 @@ $$
 
 训练目标为：
 
-$$
-\mathcal{L} =
-\mathcal{L}_{\mathrm{TopK\text{-}ListMLE}}
-- \lambda \cdot
-\mathbb{E}\left[\sum_i \mathrm{softmax}(s_i/T)r_i\right]
-$$
+```text
+总损失 = TopK-ListMLE 损失 - λ × 平均软组合收益
+软组合收益 = Σ[softmax(预测分数 / 温度) × 真实未来收益]
+```
 
 - `TopK-ListMLE`：按真实收益降序，仅计算前 `K=3` 名的 Plackett–Luce 负对数似然；每一步分母包含全体剩余股票，保证从完整截面中选对头部股票；
 - 软组合收益项：温度 `T=0.35`，权重 `λ=0.4`；
