@@ -21,15 +21,11 @@ config = {
     'early_stopping_patience': 12,
 
     'seed': 42,
-    # 复现审核：启用 PyTorch/CUDA 确定性算法；提交时请保持配置与数据版本不变。
-    'deterministic': True,
     # 双 seed 集成，预测时取均值
     'ensemble_seeds': [42, 123],
 
     'output_dir': f'./model/{sequence_length}_{feature_num}',
     'data_path': './data',
-    # 审核推理入口读取 docker-compose 挂载的 data/test.csv。
-    'predict_file': 'test.csv',
 
     # 85% 测试周变差，回调到 0.75 折中
     'train_leader_ratio': 0.75,
@@ -44,6 +40,6 @@ config = {
     # ListMLE + 可微组合收益辅助项
     'portfolio_loss_weight': 0.4,
     'portfolio_temperature': 0.35,
-    # 选模主指标：当前自定义权重下的绝对加权收益
+    # 选模主指标：绝对加权收益（与赛方评分同口径）
     'selection_metric': 'weighted_port_return',
 }

@@ -12,10 +12,6 @@ for required_file in /app/data/train.csv /app/data/test.csv; do
     fi
 done
 
-# 禁止运行时网络依赖；训练与推理所需的包已在镜像构建期安装。
-export PYTHONHASHSEED="${PYTHONHASHSEED:-42}"
-export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
-
 echo "开始确定性训练..."
 /app/train.sh
 echo "开始推理..."

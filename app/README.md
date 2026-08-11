@@ -163,6 +163,6 @@ python code/predict.py
 - 龙头池只能用训练期数据构建，不能使用验证期或待预测期数据，否则会泄露未来信息；
 - 标准化器、缺失值中位数和股票代码映射必须复用训练阶段文件，不能在测试数据上重新拟合；
 - 推理股票至少需要 30 个交易日历史；不足窗口者会被跳过；
-- 训练在导入 PyTorch 前设置 `CUBLAS_WORKSPACE_CONFIG`，并固定 Python、NumPy、PyTorch/CUDA 随机源，禁用 cuDNN benchmark、TF32，启用确定性算法。复现审核应在相同数据与配置下完整训练两次，比较 `weighted_port_return` 的绝对差，要求不超过 `0.002`；
+- 原有训练逻辑固定 Python、NumPy、PyTorch/CUDA 随机源，并设置 `cudnn.deterministic=True`、`cudnn.benchmark=False`；未改变模型结构、损失、超参或既有 seed 集成方式。复现审核应在相同数据与配置下完整训练两次，比较 `weighted_port_return` 的绝对差，要求不超过 `0.002`；
 - 推理脚本以 295 秒为硬时限，满足 5 分钟审核要求；训练和推理过程不调用网络接口；
 - 市场非平稳且周度涨幅噪声很高，本项目输出的是算法预测，不构成投资建议。

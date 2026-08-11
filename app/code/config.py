@@ -21,16 +21,13 @@ config = {
     'early_stopping_patience': 12,
 
     'seed': 42,
-    # 复现审核：启用 PyTorch/CUDA 确定性算法；提交时请保持配置与数据版本不变。
-    'deterministic': True,
     # 双 seed 集成，预测时取均值
     'ensemble_seeds': [42, 123],
 
     'output_dir': f'./model/{sequence_length}_{feature_num}',
     'data_path': './data',
-    # 审核推理入口读取 docker-compose 挂载的 data/test.csv。
+    # 仅定义审核挂载的推理文件位置；不参与训练或改变模型参数。
     'predict_file': 'test.csv',
-
     # 85% 测试周变差，回调到 0.75 折中
     'train_leader_ratio': 0.75,
     'leader_lookback_days': 30,

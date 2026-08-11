@@ -142,7 +142,7 @@ def _find_model_root(output_dir):
 
 def main():
 	ensemble_seeds = config.get('ensemble_seeds', [42])
-	data_file = os.path.join(config['data_path'], config.get('predict_file', 'test.csv'))
+	data_file = os.path.join(config['data_path'], 'train.csv')
 	output_path = os.path.join('./output/', 'result.csv')
 	os.makedirs(os.path.dirname(output_path), exist_ok=True)
 	output_dir = _find_model_root(config['output_dir'])
@@ -191,8 +191,6 @@ def main():
 	if not os.path.exists(scaler_path):
 		raise FileNotFoundError(f'未找到Scaler文件: {scaler_path}')
 
-	if not os.path.exists(data_file):
-		raise FileNotFoundError(f'未找到推理数据: {data_file}')
 	raw_df = pd.read_csv(data_file, dtype={'股票代码': str})
 	raw_df['股票代码'] = raw_df['股票代码'].astype(str).str.zfill(6)
 	raw_df['日期'] = pd.to_datetime(raw_df['日期'])

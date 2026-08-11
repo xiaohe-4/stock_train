@@ -1,8 +1,3 @@
-import os
-
-# 必须在导入 torch、初始化 CUDA 前设置，确保 cuBLAS 使用确定性实现。
-os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
-
 import pandas as pd
 import numpy as np
 import torch
@@ -17,25 +12,19 @@ from model import StockTransformer
 from utils import engineer_features_39, engineer_features_158plus39
 from utils import create_ranking_dataset_vectorized
 import joblib
+import os
 import json
 import multiprocessing as mp
 import random
-
-
-def set_seed(seed=42, deterministic=True):
-    """固定所有训练随机源，满足复现审核的确定性训练要求。"""
+def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = deterministic
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-    if deterministic:
-        torch.use_deterministic_algorithms(True)
+    os.environ['PYTHONHASHSEED'] = str(seed)
 
 feature_cloums_map = {
     '39': ['开盘', '收盘', '最高', '最低', '成交量', '成交额', '振幅', '涨跌额', '换手率', '涨跌幅','sma_5', 'sma_20', 'ema_12', 'ema_26', 'rsi', 'macd', 'macd_signal', 'volume_change', 'obv','volume_ma_5', 'volume_ma_20', 'volume_ratio', 'kdj_k', 'kdj_d', 'kdj_j', 'boll_mid', 'boll_std', 'atr_14', 'ema_60', 'volatility_10', 'volatility_20', 'return_1', 'return_5', 'return_10',  'high_low_spread', 'open_close_spread', 'high_close_spread', 'low_close_spread'],
@@ -625,7 +614,7 @@ def split_train_val_by_last_month(df, sequence_length):
 # 主程序
 def main():
     seed = config.get('seed', 42)
-    set_seed(seed, deterministic=config.get('deterministic', True))
+    set_seed(seed)
     output_dir = config['output_dir']
     model_dir = os.path.join(output_dir, f'seed_{seed}')
     os.makedirs(model_dir, exist_ok=True)
