@@ -4,9 +4,9 @@ set -euo pipefail
 
 /app/init.sh
 
-# 最终提交镜像须已包含 app/model 中的训练产物，因此默认仅推理。
-# 复现训练时显式设置 RUN_TRAIN=1。
-if [[ "${RUN_TRAIN:-0}" == "1" ]]; then
+# 复现审核从训练开始：默认训练全部固定 seed，再基于新生成模型推理。
+# 仅在本地已有模型的快速推理场景下才允许显式关闭训练。
+if [[ "${RUN_TRAIN:-1}" == "1" ]]; then
     /app/train.sh
 fi
 

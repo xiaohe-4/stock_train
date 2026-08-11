@@ -30,7 +30,7 @@ docker save -o 队伍名称.tar bdc2026
 
 导出的镜像名称必须为 `bdc2026`，提交文件命名为 `队伍名称.tar`，且不应再次压缩。示例 `docker-compose.yml` 会挂载 `app/data`、`app/output`、`app/temp` 到容器对应目录；镜像内保留 `code`、`model`、`init.sh`、`train.sh`、`test.sh`。
 
-导出最终镜像前，必须执行一次训练，或将已经验证过的训练产物复制到 `app/model/`。其中至少应包含各 seed 的 `best_model.pth`、`scaler.pkl`、`stockid2idx.pkl`、`train_medians.pkl`、`leader_stock_ids.pkl` 与 `config.json`。Dockerfile 会将该目录复制进镜像；缺失这些文件时，`test.sh` 会明确报错，不能用于最终提交。
+`data/run.sh` 默认执行“训练 → 推理”：依次训练 `ensemble_seeds=[42, 123]`，然后使用新生成的模型输出结果，以满足从训练开始的复现要求。仅在本地已有验证过的模型、需要快速推理时，才可设置 `RUN_TRAIN=0`。训练产物保存在 `app/model/`，包括各 seed 的 `best_model.pth`、`scaler.pkl`、`stockid2idx.pkl`、`train_medians.pkl`、`leader_stock_ids.pkl` 与 `config.json`。
 
 ## 数据
 
