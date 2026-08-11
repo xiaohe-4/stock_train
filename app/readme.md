@@ -2,7 +2,7 @@
 
 本项目为 2026 中国高校计算机大赛——大数据挑战赛的排序选股方案：在沪深 300 股票截面中，根据历史量价数据预测未来 5 个交易日收益靠前的股票，并输出不超过 5 只股票及其权重。
 
-比赛提交目录为 `app/`，可直接构建名为 `bdc2026` 的 Docker 镜像；研发源码保留在 `THU-BDC2026-main/`。算法补充说明见 [`THU-BDC2026-main/改进依据与算法.md`](THU-BDC2026-main/改进依据与算法.md)。
+本目录是最终提交内容，可直接构建名为 `bdc2026` 的 Docker 镜像。模型代码位于 `code/`，完整算法说明包含在本 README 中。
 
 ## 环境配置
 
@@ -10,10 +10,10 @@
 - PyTorch：`>=2.6.0`（Linux/Windows 使用 CUDA 12.8 源）
 - pandas：`>=2.3.2`；scikit-learn：`>=1.7.2`；joblib：`>=1.5.2`
 - tensorboard：`>=2.20.0`；tensorboardX：`>=2.6.4`
-- 其他依赖：akshare、baostock、ta-lib、tqdm 等，完整列表见 `THU-BDC2026-main/pyproject.toml`
+- 其他依赖：akshare、baostock、ta-lib、tqdm 等，完整列表见 `pyproject.toml`
 
 ```bash
-cd THU-BDC2026-main
+cd app
 uv sync
 ```
 
@@ -29,6 +29,8 @@ docker save -o 队伍名称.tar bdc2026
 ```
 
 导出的镜像名称必须为 `bdc2026`，提交文件命名为 `队伍名称.tar`，且不应再次压缩。示例 `docker-compose.yml` 会挂载 `app/data`、`app/output`、`app/temp` 到容器对应目录；镜像内保留 `code`、`model`、`init.sh`、`train.sh`、`test.sh`。
+
+`data/run.sh` 默认执行“训练 → 推理”：依次训练 `ensemble_seeds=[42, 123]`，然后使用新生成的模型输出结果，以满足从训练开始的复现要求。仅在本地已有验证过的模型、需要快速推理时，才可设置 `RUN_TRAIN=0`。训练产物保存在 `app/model/`，包括各 seed 的 `best_model.pth`、`scaler.pkl`、`stockid2idx.pkl`、`train_medians.pkl`、`leader_stock_ids.pkl` 与 `config.json`。
 
 ## 数据
 
@@ -117,7 +119,7 @@ docker save -o 队伍名称.tar bdc2026
 
 ## 训练流程
 
-在 `THU-BDC2026-main/` 下执行：
+在容器内的 `/app`（或本目录）下执行：
 
 ```bash
 python code/train.py
@@ -139,7 +141,7 @@ python code/train.py
 
 ## 推理流程
 
-训练完成后，在 `THU-BDC2026-main/` 下执行：
+训练完成后，在容器内的 `/app`（或本目录）下执行：
 
 ```bash
 python code/predict.py
