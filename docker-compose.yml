@@ -1,0 +1,17 @@
+services:
+  app:
+    image: bdc2026
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    volumes:
+      - ./app/data:/app/data:ro
+      - ./app/output:/app/output
+      - ./app/temp:/app/temp
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
