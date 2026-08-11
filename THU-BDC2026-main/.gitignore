@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.idea/
+.vscode/
+.workbuddy/
+
+# 数据与大模型产物（可本地生成，避免撑爆仓库）
+data/*.csv
+data/*.pkl
+model/
+output/
+temp/
+*.pth
+*.pkl
+train_log.txt
+*.zip
+nul
+
+# 日志与缓存
+*.log
+.ipynb_checkpoints/

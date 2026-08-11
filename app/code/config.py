@@ -26,7 +26,8 @@ config = {
 
     'output_dir': f'./model/{sequence_length}_{feature_num}',
     'data_path': './data',
-
+    # 仅定义审核挂载的推理文件位置；不参与训练或改变模型参数。
+    'predict_file': 'test.csv',
     # 85% 测试周变差，回调到 0.75 折中
     'train_leader_ratio': 0.75,
     'leader_lookback_days': 30,
@@ -40,6 +41,6 @@ config = {
     # ListMLE + 可微组合收益辅助项
     'portfolio_loss_weight': 0.4,
     'portfolio_temperature': 0.35,
-    # 选模主指标：绝对加权收益（与赛方评分同口径）
+    # 选模主指标：当前自定义权重下的绝对加权收益
     'selection_metric': 'weighted_port_return',
 }

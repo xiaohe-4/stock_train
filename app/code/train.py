@@ -16,6 +16,7 @@ import os
 import json
 import multiprocessing as mp
 import random
+
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
