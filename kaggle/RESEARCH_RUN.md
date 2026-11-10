@@ -1,6 +1,6 @@
 # 时间记忆研究回测
 
-笔记本：`kaggle/hs300_temporal_memory_research.ipynb`。它锁定提交 `370a1815b58628a2d70b610c4b96d776e45030df`，其中包含 `research/study.py`。不要改回 v4 的 `c735797`。
+笔记本：`kaggle/hs300_temporal_memory_research.ipynb`。它锁定提交 `b711d7e5a30df39ba44f3d61643793bfcc43a534`，其中包含已修正的 `research/study.py`。不要改回 v4 的 `c735797`，也不要再提交锁定 `370a181` 的 version 1。version 1 在导入 `feature_cols_map` 时失败，没有进入训练。
 
 在 Kaggle 上打开 GPU，挂上已有数据集，Run All。不要改评估日期，也不要打开“按今天重新判断快照是否过期”。
 
