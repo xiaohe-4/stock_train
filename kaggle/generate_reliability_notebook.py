@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Kaggle notebook that audits strict mode and runs only the CPU smoke."""
+"""Build the Kaggle notebook that downloads point-in-time data and runs the strict study."""
 
 from __future__ import annotations
 
@@ -21,26 +21,21 @@ def cell(kind: str, source: str) -> dict:
 
 
 def build(commit: str) -> dict:
-    intro = """# 沪深300 可靠评估审计
+    intro = """# 沪深300 严格可靠评估
 
 这不是 v4 排名，也不会覆盖 v4 权重、`result.csv` 或已经完成的三臂研究输出。
 
-- 当前数据集是后复权、当前 300 只成分。它不能变成严格的 point-in-time 数据。
-- 本笔记本默认只做依赖检查、锁定提交、数据审计和 CPU 烟测。不跑 80 epoch。
-- 研究模式的结论是 `abstain`。这不是新的收益，也不能当成可上线。
-- 可比持有期仍是信号日 t 的下一交易日开盘进、t+5 开盘出，中间是 4 个交易日间隔。
-- 严格模式需要按日历史成分、不复权行情和上市日。缺任何一项就停止，不用后复权猜测涨跌停。
+- 笔记本自己用匿名 BaoStock 拉取 2024-01-02 至 2026-11-09 的每日成分、不复权日线和上市日。不需要原来的后复权数据集。
+- 下载写到 `/kaggle/working/hs300_reliability/pit`，可以断点续传。审计不通过就停止，不会改用后复权继续。
+- 审计通过后才做三折、种子 42 和 123、等权、Ridge、浅层树和原 Transformer。内部 LSTM 不打开。
+- 可比持有期仍是 t+1 开盘进、t+5 开盘出，共 4 个交易日间隔。
+- 总预算按单次 12 小时控制，程序在 11 小时处停止未完成的部分并标明未完成。
+- 这里不写死任何收益数字。结果只来自本次运行写出的文件。
 """
     params = f'''PINNED_COMMIT = "{commit}"
 REPO_URL = "https://github.com/xiaohe-4/stock_train.git"
-PANEL = "/kaggle/input/datasets/caihuasheng/hs300-latest-complete-daily-snapshot/hs300_daily_hfq_20240101_complete.csv"
-NAMES = "/kaggle/input/datasets/caihuasheng/hs300-latest-complete-daily-snapshot/hs300_constituents.csv"
-MANIFEST = "/kaggle/input/datasets/caihuasheng/hs300-latest-complete-daily-snapshot/hs300_data_manifest.json"
-OUTPUT = "/kaggle/working/hs300_reliability"
-from pathlib import Path
-missing = [path for path in (PANEL, NAMES, MANIFEST) if not Path(path).is_file()]
-if missing:
-    raise SystemExit("missing dataset files\\n" + "\\n".join(missing))
+PIT = "/kaggle/working/hs300_reliability/pit"
+OUTPUT = "/kaggle/working/hs300_reliability/report"
 print("reliability commit", PINNED_COMMIT)
 '''
     setup = '''import subprocess
@@ -110,28 +105,57 @@ if torch_before is not None:
     if torch_after != torch_before:
         raise SystemExit("pip changed the existing torch install: %s -> %s" % (torch_before, torch_after))
 '''
-    run = '''import subprocess
+    fetch = '''import subprocess
 import sys
-PROBE = "/kaggle/working/stock_train/research/reliability/fixtures/baostock_pit_probe_2026-11-10.json"
 subprocess.check_call([
-    sys.executable, "-m", "research.reliability.smoke",
-    "--panel", PANEL,
-    "--probe", PROBE,
+    sys.executable, "-m", "research.reliability.fetch_pit",
+    "--output-dir", PIT,
+], cwd="/kaggle/working/stock_train")
+'''
+    audit = '''import json
+import subprocess
+import sys
+from pathlib import Path
+completed = subprocess.run([
+    sys.executable, "-m", "research.reliability.strict_run",
+    "--data-dir", PIT,
+    "--output-dir", OUTPUT,
+    "--audit-only",
+], cwd="/kaggle/working/stock_train")
+report = json.loads(Path(OUTPUT, "audit_report.json").read_text(encoding="utf-8"))
+print("strict_ready", report["strict_ready"])
+for item in report["blockers"]:
+    print("-", item)
+if completed.returncode != 0 or not report["strict_ready"]:
+    raise SystemExit("strict audit failed; refusing to train")
+'''
+    run = '''import json
+import subprocess
+import sys
+from pathlib import Path
+completed = subprocess.run([
+    sys.executable, "-m", "research.reliability.strict_run",
+    "--data-dir", PIT,
     "--output-dir", OUTPUT,
 ], cwd="/kaggle/working/stock_train")
+print("returncode", completed.returncode)
+summary_path = Path(OUTPUT, "summary.json")
+if summary_path.is_file():
+    print(summary_path.read_text(encoding="utf-8")[:2000])
+if completed.returncode not in (0, 3):
+    raise SystemExit(completed.returncode)
 '''
     show = '''import json
 from pathlib import Path
-summary = json.loads(Path(OUTPUT, "research_summary.json").read_text(encoding="utf-8"))
+summary = json.loads(Path(OUTPUT, "summary.json").read_text(encoding="utf-8"))
 print("status", summary["status"])
-print("mode", summary["mode"], "strict", summary["strict"])
-print("feature_map", summary["feature_map"])
-print("blockers")
-for item in summary["blockers"]:
-    print("-", item)
-print("raw_limit_check", summary["raw_limit_check"])
-print("smoke", summary["smoke"], "replaces_v4", summary["replaces_v4"])
-print("no new return is claimed")
+print("strict", summary["strict"], "trained", summary["trained"], "complete", summary["complete"])
+print("selected_model", summary.get("selected_model"))
+print("models", summary.get("models"))
+print("feature_map", summary.get("feature_map"))
+print("replaces_v4", summary.get("replaces_v4"))
+print("holding_steps", summary.get("holding_steps"))
+print(summary.get("limitation"))
 '''
     return {
         "nbformat": 4,
@@ -153,6 +177,8 @@ print("no new return is claimed")
             cell("code", params),
             cell("code", setup),
             cell("code", install),
+            cell("code", fetch),
+            cell("code", audit),
             cell("code", run),
             cell("code", show),
         ],

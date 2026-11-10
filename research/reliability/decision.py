@@ -3,6 +3,22 @@
 from __future__ import annotations
 
 
+def choose(mode: str, strict_ready: bool, dev_reports: list[dict]) -> dict:
+    """Pick one model that passes every dev fold. Test rows are not accepted here."""
+    if mode != "strict" or not strict_ready or not dev_reports:
+        return {"status": "abstain", "model": None}
+    passing = []
+    for model in sorted({row["model"] for row in dev_reports}):
+        subset = [row for row in dev_reports if row["model"] == model]
+        if decide("strict", True, subset) == "process_only":
+            mean = sum(float(row["excess"]) for row in subset) / len(subset)
+            passing.append((mean, model))
+    if not passing:
+        return {"status": "abstain", "model": None}
+    passing.sort(key=lambda item: (-item[0], item[1]))
+    return {"status": "process_only", "model": passing[0][1]}
+
+
 def decide(mode: str, strict_ready: bool, dev_reports: list[dict]) -> str:
     if mode != "strict" or not strict_ready:
         return "abstain"
