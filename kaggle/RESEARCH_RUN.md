@@ -1,6 +1,6 @@
 # 时间记忆研究回测
 
-笔记本：`kaggle/hs300_temporal_memory_research.ipynb`。它克隆的提交必须包含 `research/study.py`，不是 v4 的 `c735797`。
+笔记本：`kaggle/hs300_temporal_memory_research.ipynb`。它锁定提交 `370a1815b58628a2d70b610c4b96d776e45030df`，其中包含 `research/study.py`。不要改回 v4 的 `c735797`。
 
 在 Kaggle 上打开 GPU，挂上已有数据集，Run All。不要改评估日期，也不要打开“按今天重新判断快照是否过期”。
 
