@@ -77,6 +77,7 @@ if head != PINNED_COMMIT:
     raise SystemExit("checked out commit does not match the pin")
 ''' % json.dumps(blobs)
     install = '''import importlib.util
+import json
 import subprocess
 import sys
 
@@ -122,9 +123,21 @@ if cons.BAOSTOCK_CLIENT_VERSION != "00.9.40":
 print("baostock", version("baostock"), "protocol", cons.BAOSTOCK_CLIENT_VERSION)
 
 if torch_before is not None:
-    import importlib
-    importlib.reload(torch)
-    torch_after = (torch.__version__, bool(torch.cuda.is_available()), torch.cuda.device_count())
+    # A second import in this process is safe. Reloading torch is not: it registers triton again.
+    probe = subprocess.run(
+        [
+            sys.executable, "-c",
+            "import json, torch\\n"
+            "print('TORCH_PROBE ' + json.dumps([torch.__version__, bool(torch.cuda.is_available()), int(torch.cuda.device_count())]))",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    probed = [line for line in probe.stdout.splitlines() if line.startswith("TORCH_PROBE ")]
+    if probe.returncode != 0 or len(probed) != 1:
+        raise SystemExit("torch probe failed\\n" + probe.stdout + probe.stderr)
+    torch_after = tuple(json.loads(probed[0].split(" ", 1)[1]))
     print("torch after pip", torch_after)
     if torch_after != torch_before:
         raise SystemExit("pip changed the existing torch install: %s -> %s" % (torch_before, torch_after))
