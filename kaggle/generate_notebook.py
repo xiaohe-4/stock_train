@@ -34,17 +34,21 @@ def main() -> None:
     intro = (ROOT / "NOTEBOOK_INTRO.md").read_text(encoding="utf-8")
     parameters = '''RUN_MODE = "full"  # full | smoke | preflight
 RESUME_COMPLETED_SEEDS = False
-USE_OFFLINE_SNAPSHOT = False
+USE_OFFLINE_SNAPSHOT = True
 ALLOW_STALE_SNAPSHOT = False
-OFFLINE_PANEL = "/kaggle/input/REPLACE_DATASET/hs300_daily_hfq_20240101_complete.csv"
-OFFLINE_NAMES = "/kaggle/input/REPLACE_DATASET/hs300_constituents.csv"
-OFFLINE_MANIFEST = "/kaggle/input/REPLACE_DATASET/hs300_data_manifest.json"
+OFFLINE_PANEL = "/kaggle/input/datasets/caihuasheng/hs300-latest-complete-daily-snapshot/hs300_daily_hfq_20240101_complete.csv"
+OFFLINE_NAMES = "/kaggle/input/datasets/caihuasheng/hs300-latest-complete-daily-snapshot/hs300_constituents.csv"
+OFFLINE_MANIFEST = "/kaggle/input/datasets/caihuasheng/hs300-latest-complete-daily-snapshot/hs300_data_manifest.json"
 PINNED_COMMIT = "c735797c86ec3908379f7f54b70953c6a62b23b9"
 REPO_URL = "https://github.com/xiaohe-4/stock_train.git"
 print("mode", RUN_MODE)
 assert RUN_MODE in {"full", "smoke", "preflight"}
 if RUN_MODE != "full":
     print("THIS IS NOT THE FINAL RANKING")
+from pathlib import Path
+missing = [p for p in (OFFLINE_PANEL, OFFLINE_NAMES, OFFLINE_MANIFEST) if not Path(p).is_file()]
+if USE_OFFLINE_SNAPSHOT and missing:
+    raise SystemExit("attached snapshot files not found:\\n" + "\\n".join(missing))
 '''
     setup = '''import base64
 import subprocess
@@ -72,21 +76,58 @@ print("HEAD", head)
 if head != PINNED_COMMIT:
     raise SystemExit("checked out commit does not match the pin")
 ''' % json.dumps(blobs)
-    install = '''import subprocess
+    install = '''import importlib.util
+import subprocess
 import sys
-# Keep the CUDA torch already installed on the Kaggle image.
-subprocess.check_call([
+
+def _have(module):
+    return importlib.util.find_spec(module) is not None
+
+# Do not install or upgrade torch. Kaggle's CUDA build must stay as it is.
+torch_before = None
+if _have("torch"):
+    import torch
+    torch_before = (torch.__version__, bool(torch.cuda.is_available()), torch.cuda.device_count())
+    print("torch before pip", torch_before)
+
+# PyPI has baostock 0.9.4. Its protocol string is 00.9.40; there is no pip release 0.9.40.
+# Install only missing scientific packages, with pins that have Python 3.13 wheels.
+# only-if-needed avoids replacing the numpy that the existing torch was built against.
+pins_if_missing = [
+    ("pandas", "pandas==2.3.3"),
+    ("sklearn", "scikit-learn==1.7.2"),
+    ("joblib", "joblib==1.5.2"),
+    ("tensorboardX", "tensorboardX==2.6.4"),
+    ("tqdm", "tqdm==4.67.1"),
+    ("talib", "ta-lib==0.6.8"),
+]
+cmd = [
     sys.executable, "-m", "pip", "install", "-q",
-    "baostock==0.9.40",
-    "pandas>=2.3.2",
-    "scikit-learn>=1.7.2",
-    "joblib>=1.5.2",
-    "tensorboardX>=2.6.4",
-    "tqdm>=4.67.1",
-    "ta-lib>=0.6.8",
-])
-import torch
-print("torch", torch.__version__, "cuda", torch.cuda.is_available(), "devices", torch.cuda.device_count())
+    "--upgrade-strategy", "only-if-needed",
+    "baostock==0.9.4",
+]
+for module, pin in pins_if_missing:
+    if not _have(module):
+        cmd.append(pin)
+print("pip install", " ".join(cmd[4:]), flush=True)
+subprocess.check_call(cmd)
+
+import baostock
+import baostock.common.contants as cons
+from importlib.metadata import version
+if version("baostock") != "0.9.4":
+    raise SystemExit("baostock dist is %s, expected 0.9.4" % version("baostock"))
+if cons.BAOSTOCK_CLIENT_VERSION != "00.9.40":
+    raise SystemExit("unexpected BaoStock protocol client %s" % cons.BAOSTOCK_CLIENT_VERSION)
+print("baostock", version("baostock"), "protocol", cons.BAOSTOCK_CLIENT_VERSION)
+
+if torch_before is not None:
+    import importlib
+    importlib.reload(torch)
+    torch_after = (torch.__version__, bool(torch.cuda.is_available()), torch.cuda.device_count())
+    print("torch after pip", torch_after)
+    if torch_after != torch_before:
+        raise SystemExit("pip changed the existing torch install: %s -> %s" % (torch_before, torch_after))
 '''
     execute = '''import subprocess
 import sys

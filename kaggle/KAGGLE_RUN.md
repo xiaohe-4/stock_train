@@ -5,12 +5,13 @@
 ## 要上传的文件
 
 - `hs300_5d_rank_kaggle.ipynb`：新建 Kaggle 笔记本后导入。不要打开或覆盖已有的私有 GPU 检查笔记本。
-- 现场下载失败时才另外上传这三个文件，做成私有 Dataset，并把笔记本第一个单元的 `USE_OFFLINE_SNAPSHOT` 改成 `True`，路径改成该 Dataset：
-  - `hs300_daily_hfq_20240101_complete.csv`
-  - `hs300_constituents.csv`
-  - `hs300_data_manifest.json`
+笔记本第一个单元已经是 `USE_OFFLINE_SNAPSHOT = True`，并指向已挂上的私有数据集：
 
-默认 `USE_OFFLINE_SNAPSHOT = False`。笔记本会自己连 BaoStock。快照日期如果早于当场算出的完整交易日，full 模式会拒绝训练。
+- `/kaggle/input/datasets/caihuasheng/hs300-latest-complete-daily-snapshot/hs300_daily_hfq_20240101_complete.csv`
+- `/kaggle/input/datasets/caihuasheng/hs300-latest-complete-daily-snapshot/hs300_constituents.csv`
+- `/kaggle/input/datasets/caihuasheng/hs300-latest-complete-daily-snapshot/hs300_data_manifest.json`
+
+`ALLOW_STALE_SNAPSHOT = False`。重新导入后不用改这几个值。快照最大日期如果早于当场算出的完整交易日，full 模式会拒绝训练。
 
 ## 已经核对的数据
 
@@ -54,7 +55,7 @@ full 模式不改这些值：
 
 1. 账号 `caihuasheng` 登录。新建笔记本，确认不是 GPU 检查笔记本，再导入 ipynb。
 2. Accelerator 用 GPU T4。代码只用 `cuda:0`。Internet 打开。不要设为 Public。
-3. 确认第一个单元 `RUN_MODE = "full"`，`RESUME_COMPLETED_SEEDS = False`。
+3. 第一个单元已经是 `RUN_MODE = "full"`、`RESUME_COMPLETED_SEEDS = False`、`USE_OFFLINE_SNAPSHOT = True`。不要改依赖版本。PyPI 上的 BaoStock 发行版是 `0.9.4`；`00.9.40` 只是这个包内部的协议号，不是 pip 版本。
 4. Run All。
 5. 会话还在时下载 `/kaggle/working/hs300_rank_output/` 里的 `ranking_full.csv`、`result.csv`、`VERIFY_PASS.txt`、`run_manifest.json`。
 

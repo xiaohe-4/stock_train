@@ -18,7 +18,8 @@
 - `RUN_MODE = "smoke"`：只做通路检查。1 个 epoch、只训练 seed 42，写到单独目录。输出明确标成不是排序。
 - `RUN_MODE = "preflight"`：只检查代码哈希、数据和 GPU，不训练。
 - `RESUME_COMPLETED_SEEDS = False`：默认从头训练两个 seed。只有会话在某个 seed 完整写完 `final_score.txt` 和 `best_model.pth` 后中断，才把它改成 `True` 再跑。这不会把没跑完的 seed 当成完成。
-- `USE_OFFLINE_SNAPSHOT = False`：默认现场向 BaoStock 拉数据。只有现场连接失败、而且你明确改成 `True` 并挂上随交付提供的快照时，才读快照。快照日期早于当场算出的完整交易日时，full 模式会拒绝训练。
+- `USE_OFFLINE_SNAPSHOT = True`：直接读已经挂上的私有数据集，不再下载行情。三个路径已经写死，重新导入后不用改。
+- `ALLOW_STALE_SNAPSHOT = False`：快照最大日期必须等于当场算出的完整交易日。
 
 ## 仓库默认，full 模式不会改
 
