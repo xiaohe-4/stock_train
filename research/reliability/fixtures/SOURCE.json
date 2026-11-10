@@ -1,0 +1,10 @@
+{
+  "source": "baostock.query_hs300_stocks",
+  "price_source": "baostock.query_history_k_data_plus adjustflag=3",
+  "listing_source": "baostock.query_stock_basic",
+  "retrieved": "2026-11-10",
+  "anonymous": true,
+  "account_required": false,
+  "sha256": "f49875b31e9d3ca58f2345ef8a5c0d5007e7d9dd3cdc9d6f1d6bb3b2a88b60ee",
+  "notes": "Seven constituent dates and a short raw-price sample. Not the full 689-day panel."
+}
