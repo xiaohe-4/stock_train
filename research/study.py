@@ -304,7 +304,7 @@ def train_one(arm: str, samples: list[dict], market, calendar, seed: int) -> dic
 
 
 def build_samples(panel: pd.DataFrame) -> tuple[list[dict], dict, list[str]]:
-    from train import feature_cols_map, feature_engineer_func_map
+    from train import feature_cloums_map, feature_engineer_func_map
 
     frame = panel.copy()
     frame["股票代码"] = frame["股票代码"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(6)
@@ -322,7 +322,7 @@ def build_samples(panel: pd.DataFrame) -> tuple[list[dict], dict, list[str]]:
     average = recent.groupby("股票代码")["成交额"].mean().sort_values(ascending=False)
     keep = set(average.head(max(1, int(len(average) * LEADER_RATIO))).index)
     engineer = feature_engineer_func_map["158+39"]
-    columns = feature_cols_map["158+39"]
+    columns = feature_cloums_map["158+39"]
     samples_by_date: dict[str, list] = {}
     for code, group in frame[frame["股票代码"].isin(keep)].groupby("股票代码", sort=False):
         group = group.sort_values("日期")
@@ -439,6 +439,71 @@ def verify_panel_file(path: Path, digest: str) -> pd.DataFrame:
     if digest != PANEL_SHA256:
         raise RuntimeError("research digest does not match the frozen snapshot")
     return frame
+
+
+def smoke_snapshot_entry(panel: pd.DataFrame, output_dir: Path) -> dict:
+    """One real build plus one optimizer step per arm. Not a training run."""
+    from config import config as model_config
+    from train import CombinedRankingLoss
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    samples, market, calendar = build_samples(panel)
+    train_samples = [sample for sample in samples if sample["split"] == "train"]
+    if not train_samples:
+        raise RuntimeError("snapshot smoke produced no training windows")
+    input_dim = int(train_samples[0]["x"].shape[-1])
+    loss_fn = CombinedRankingLoss(
+        k=model_config.get("topk_mle_k", 3),
+        portfolio_weight=model_config.get("portfolio_loss_weight", 0.4),
+        temperature=model_config.get("portfolio_temperature", 0.35),
+    )
+    steps = {}
+    runs = []
+    trades = []
+    dev_means = {}
+    for arm in ARMS:
+        model = build_model(arm, input_dim, num_stocks=8, config=model_config)
+        sample = train_samples[0]
+        model.train()
+        optimizer = torch.optim.AdamW(model.parameters(), lr=model_config["learning_rate"])
+        optimizer.zero_grad(set_to_none=True)
+        prediction = model(torch.from_numpy(sample["x"]).unsqueeze(0))
+        target = torch.from_numpy(sample["train_target"]).unsqueeze(0)
+        loss = loss_fn(prediction, target)
+        loss.backward()
+        grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0))
+        optimizer.step()
+        steps[arm] = {"loss_finite": bool(torch.isfinite(loss.detach())), "grad_norm": grad_norm}
+        dev_rows = evaluate_split(model, samples, market, calendar, "dev")
+        dev_means[arm] = mean_excess(dev_rows, "dev")
+        nav = period_nav(dev_rows, "dev")
+        runs.append(
+            {
+                "arm": arm,
+                "parameters": count_parameters(model),
+                "best_dev_excess": dev_means[arm],
+                "dev_nav": {key: value for key, value in nav.items() if key != "trades"},
+                "annualization_warning": nav["annualization_warning"],
+            }
+        )
+        for trade in nav["trades"]:
+            trades.append({"arm": arm, "split": "dev", **trade})
+    summary = {
+        "status": decide(dev_means),
+        "asof": ASOF,
+        "steps": steps,
+        "dev_days": sum(sample["split"] == "dev" for sample in samples),
+        "dev_means": dev_means,
+        "runs": runs,
+        "v4_weights_untouched": True,
+        "smoke": True,
+    }
+    (output_dir / "research_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    pd.DataFrame(trades).to_csv(output_dir / "research_trades.csv", index=False)
+    return summary
 
 
 def main() -> None:
