@@ -245,9 +245,22 @@ def finished_seeds(run_dir: Path) -> list[int]:
     return done
 
 
-def run_training(run_dir: Path, mode: str, resume: bool) -> None:
+def module_env(run_dir: Path) -> dict[str, str]:
+    """Let `python -c` and spawn workers import app/code/*.py.
+
+    cwd stays the app directory because config uses ./data and ./model.
+    `python -c` only puts that cwd on sys.path, not the code subdirectory.
+    """
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    code_dir = str((run_dir / "code").resolve())
+    previous = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = code_dir if not previous else code_dir + os.pathsep + previous
+    return env
+
+
+def run_training(run_dir: Path, mode: str, resume: bool) -> None:
+    env = module_env(run_dir)
     # Call train.main() per seed. Leaving ensemble_seeds unchanged keeps the
     # saved config.json equal to the repository default even when a finished
     # seed is skipped on resume.
@@ -284,8 +297,7 @@ for seed in seeds:
 
 
 def run_export(run_dir: Path, names_csv: Path, out_csv: Path, provenance_path: Path) -> None:
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
+    env = module_env(run_dir)
     subprocess.run(
         [
             sys.executable,
