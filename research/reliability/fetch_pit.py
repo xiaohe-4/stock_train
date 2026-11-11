@@ -130,8 +130,89 @@ def fetch_pit(
         listings[code] = _call(lambda code=code: client.listing(code), retries, sleep, client.reconnect)
         _write_json(listings_path, listings)
     manifest = _manifest(root, start, end, dates, started_path.read_text(encoding="utf-8").strip())
+    manifest["data_source"] = "downloaded"
     _write_json(root / "manifest.json", manifest)
     return manifest
+
+
+def _cache_status(root: Path, start: str, end: str) -> str:
+    manifest_path = root / "manifest.json"
+    calendar_path = root / "calendar.json"
+    if not manifest_path.is_file() or not calendar_path.is_file():
+        return "missing manifest or calendar"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        dates = json.loads(calendar_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "unreadable manifest or calendar"
+    if not dates or dates[0] > start or dates[-1] < end:
+        return f"date range {dates[:1]}..{dates[-1:]} does not cover {start}..{end}"
+    files = manifest.get("files") or {}
+    if not files:
+        return "manifest has no files"
+    for relative, meta in files.items():
+        path = root / relative
+        if not path.is_file():
+            return f"missing {relative}"
+        if _sha256(path) != meta.get("sha256"):
+            return f"sha256 mismatch {relative}"
+    return ""
+
+
+def locate_reusable(search_roots, start: str = START, end: str = END) -> tuple[Path | None, str]:
+    """Return a verified PIT directory whose calendar covers start..end, else a rejection reason."""
+    candidates = []
+    seen = set()
+    for base in search_roots:
+        base = Path(base)
+        if not base.exists():
+            continue
+        for manifest_path in base.rglob("manifest.json"):
+            parent = manifest_path.parent
+            if parent in seen:
+                continue
+            seen.add(parent)
+            if (parent / "calendar.json").is_file() and (parent / "membership").is_dir():
+                candidates.append(parent)
+    if not candidates:
+        return None, "no manifest found"
+
+    def rank(path: Path) -> tuple:
+        text = path.as_posix()
+        return (0 if "hs300_reliability" in text else 1, len(text), text)
+
+    reasons = []
+    for parent in sorted(candidates, key=rank):
+        reason = _cache_status(parent, start, end)
+        if not reason:
+            return parent, ""
+        reasons.append(f"{parent}: {reason}")
+    return None, "; ".join(reasons[:4])
+
+
+def resolve_pit(output_dir, client=None, search_roots=(), **fetch_kwargs) -> dict:
+    start = fetch_kwargs.get("start", START)
+    end = fetch_kwargs.get("end", END)
+    found, rejection = locate_reusable(search_roots, start, end)
+    if found is not None:
+        dates = json.loads((found / "calendar.json").read_text(encoding="utf-8"))
+        return {
+            "data_dir": str(found),
+            "data_source": "reused",
+            "reuse_rejection": None,
+            "trading_days": len(dates),
+        }
+    if client is None:
+        client = BaoStockClient()
+    manifest = fetch_pit(output_dir, client, **fetch_kwargs)
+    return {
+        "data_dir": str(Path(output_dir).resolve()),
+        "data_source": "downloaded",
+        "reuse_rejection": rejection,
+        "trading_days": manifest["trading_days"],
+        "bar_rows": manifest["bar_rows"],
+        "listing_rows": manifest["listing_rows"],
+    }
 
 
 def _manifest(root: Path, start: str, end: str, dates: list[str], started_at: str) -> dict:
@@ -241,9 +322,19 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--sleep", type=float, default=0.25)
     parser.add_argument("--retries", type=int, default=5)
+    parser.add_argument("--reuse-search", action="append", default=None)
     args = parser.parse_args()
-    manifest = fetch_pit(args.output_dir, BaoStockClient(), sleep=lambda seconds: time.sleep(max(seconds, args.sleep)), retries=args.retries)
-    print(json.dumps({"trading_days": manifest["trading_days"], "bar_rows": manifest["bar_rows"], "listing_rows": manifest["listing_rows"]}, ensure_ascii=False), flush=True)
+    roots = list(args.reuse_search or [])
+    if not roots and Path("/kaggle/input").is_dir():
+        roots = ["/kaggle/input"]
+    info = resolve_pit(
+        args.output_dir,
+        client=None if roots else BaoStockClient(),
+        search_roots=roots,
+        sleep=lambda seconds: time.sleep(max(seconds, args.sleep)),
+        retries=args.retries,
+    )
+    print(json.dumps(info, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

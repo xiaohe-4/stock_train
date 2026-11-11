@@ -22,3 +22,7 @@ def test_reliability_notebook_fetches_then_trains_only_after_audit():
     assert "importlib.reload" not in text
     assert "--full" not in text
     assert "feature_cols_map" not in text
+    assert "--reuse-search" in text
+    assert "/kaggle/input" in text
+    assert "DATA_SOURCE" in text
+    assert "2024" in text

@@ -83,3 +83,18 @@ def test_tiny_strict_run_writes_every_blotter(tmp_path):
     summary = json.loads((tmp_path / "out" / "summary.json").read_text(encoding="utf-8"))
     assert summary["enable_memory"] is False
     assert "memory" not in summary["models"]
+    assert summary["nav_metrics_gated"] is False
+    assert summary["early_stop"] == "inner_train_top5_label"
+    assert summary["data_source"] == "downloaded"
+    assert "sample_std" in summary["sharpe_formula"]
+    assert "sqrt(252)" in summary["sharpe_formula"]
+    transformer_rows = [row for row in summary["dev_reports"] if row["model"] == "transformer"]
+    assert {row["seed"] for row in transformer_rows} == {42, 123}
+    for row in summary["dev_reports"] + summary["test_reports"]:
+        assert isinstance(row["stress_excess_3x"], float)
+        assert isinstance(row["cumulative_return"], float)
+        assert isinstance(row["benchmark_cumulative_return"], float)
+        assert isinstance(row["max_drawdown"], float)
+        assert isinstance(row["average_turnover"], float)
+        assert isinstance(row["total_fees"], float)
+        assert "sharpe_annualized" in row

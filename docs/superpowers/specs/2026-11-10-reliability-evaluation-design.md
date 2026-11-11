@@ -109,3 +109,19 @@ Kaggle 研究 version 2 已经跑完，数字来自用户给出的日志，本�
 本地只跑单元测试和真实数据小样本烟测，不跑 80 epoch。新的 Kaggle 笔记本默认只做依赖、锁定提交、数据审计和烟测。完整三折训练由用户以后显式打开。
 
 不改 v4 权重、旧研究的日期、预算和指标，不改 `feature_cloums_map` 这个真实导出名。
+
+## 2026-11-11 复跑前的修正
+
+Kaggle 上一次严格运行已经完成：notebook `caihuasheng/hs300-reliability-evaluation` version 1，`scriptVersionId` 368132794，提交 `32176c31`，4621 秒，审计 `strict_ready=true`，决策 `abstain`。下面的改动不改那次结果，不编造新的收益，也不把门槛放宽来让某个模型通过。
+
+种子没有“没进 `torch.manual_seed`”。在 CPU 上，种子 42 和 123 的 `StockTransformer` 初始权重和 eval 预测都不同，重复 42 则相同。相同的是账面：`_ranked` 用稳定排序把分数变成固定权重。同一天里分数完全相同，或者出现非有限分数时，排序退回样本里的代码顺序，种子就改变不了逐笔和超额。本地用两只行情完全相同的股票复现了这一点：预测值不同，成交和超额逐位相同。非有限分数现在直接失败，不再排成一份与种子无关的持仓。
+
+`_seed` 原先只设置 `random`、`numpy` 和 `torch.manual_seed`。训练现在在建模型前设置这些，并在 `model.to(device)` 之后再设置一次，让 CUDA 上的 dropout 用的是这颗种子。同时打开 `cudnn.deterministic`、关闭 `cudnn.benchmark` 和 TF32，并写入 `PYTHONHASHSEED`。这条路径没有 DataLoader，所以没有 worker 或 generator 参数。树模型本来就用 `random_state`，Ridge 跨种子相同是预期的。
+
+可靠评估的默认种子改为 `42, 123, 2024`，写在可靠评估运行器里，不改三臂研究的 `protocol.SEEDS`。门槛代码不变：每个折、每个种子的 1 倍和 2 倍超额都必须大于 0。第三颗种子让门槛更严，不是放宽。
+
+`summary.json` 的每一行现在有 `stress_excess_3x`。另外从 1 倍 `daily_nav` 报告、但不设门槛：模型累计收益、等权基准累计收益、最大回撤（非负的 `(peak-nav)/peak`，起点是初始现金）、年化夏普、日均换手、费用合计。夏普公式写在 `sharpe_formula`：`mean(r) / sample_std(r) * sqrt(252)`，`r_t = nav_t / nav_{t-1} - 1`，序列从初始现金开始，包含空仓日，标准差 `ddof=1`。这不是 5 日持有期夏普。`nav_metrics_gated` 为 false。3 倍超额、回撤、夏普、换手和费用都不进入 `decide`。
+
+可选的预先声明改动只有一项：Transformer 早停不再使用折的开发验证账户超额。训练集按信号日排序后，最后 20% 的日期作为内部验证，只在更早的日期上做梯度步骤。早停指标是内部验证日上、按固定 top-5 权重加权的训练标签均值。patience 和最大学习轮数不变，没有按已经看到的开发验证或测试去调学习率、dropout 或深度。这些日期已经被看过两次，所以正式折的 `evidence_grade` 仍是 `already_observed`。
+
+点时数据可以复用。`fetch_pit --reuse-search` 在给定目录（笔记本里是 `/kaggle/input`）下查找带 `calendar.json` 和 `membership/` 的 `manifest.json`，优先路径里含 `hs300_reliability` 的那份。每个文件的 sha256 必须和 manifest 一致，而且日历要盖住所需的起止日期。通过就直接读那份目录，不改输入里的 manifest；这次报告的 `data_source` 写 `reused`。不通过就按原来的方式下载到输出目录，manifest 写 `data_source=downloaded`，并在报告里留下拒绝原因。复用之后仍然先审计，审计失败就停止，不会当成严格数据。

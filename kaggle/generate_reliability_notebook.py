@@ -27,7 +27,9 @@ def build(commit: str) -> dict:
 
 - 笔记本自己用匿名 BaoStock 拉取 2024-01-02 至 2026-11-09 的每日成分、不复权日线和上市日。不需要原来的后复权数据集。
 - 下载写到 `/kaggle/working/hs300_reliability/pit`，可以断点续传。审计不通过就停止，不会改用后复权继续。
-- 审计通过后才做三折、种子 42 和 123、等权、Ridge、浅层树和原 Transformer。内部 LSTM 不打开。
+- 审计通过后才做三折、种子 42、123 和 2024、等权、Ridge、浅层树和原 Transformer。内部 LSTM 不打开。
+- 如果 `/kaggle/input` 里有一份校验通过的 `hs300_reliability/pit`（manifest 的 sha256 一致，且日历覆盖 2024-01-02 至 2026-11-09），就复用它并仍先审计。校验失败就重新下载。报告里的 `data_source` 写成 `reused` 或 `downloaded`。
+- Transformer 早停只用训练集内部最后 20% 信号日，不看折的开发验证或测试。证据等级保持 already_observed。
 - 可比持有期仍是 t+1 开盘进、t+5 开盘出，共 4 个交易日间隔。
 - 总预算按单次 12 小时控制，程序在 11 小时处停止未完成的部分并标明未完成。
 - 这里不写死任何收益数字。结果只来自本次运行写出的文件。
@@ -105,12 +107,26 @@ if torch_before is not None:
     if torch_after != torch_before:
         raise SystemExit("pip changed the existing torch install: %s -> %s" % (torch_before, torch_after))
 '''
-    fetch = '''import subprocess
+    fetch = '''import json
+import subprocess
 import sys
-subprocess.check_call([
+completed = subprocess.run([
     sys.executable, "-m", "research.reliability.fetch_pit",
     "--output-dir", PIT,
-], cwd="/kaggle/working/stock_train")
+    "--reuse-search", "/kaggle/input",
+], cwd="/kaggle/working/stock_train", capture_output=True, text=True)
+print(completed.stdout)
+print(completed.stderr)
+if completed.returncode != 0:
+    raise SystemExit(completed.returncode)
+lines = [line for line in completed.stdout.splitlines() if line.startswith("{")]
+info = json.loads(lines[-1])
+PIT = info["data_dir"]
+DATA_SOURCE = info["data_source"]
+DATA_SOURCE_PATH = info["data_dir"]
+REUSE_REJECTION = info.get("reuse_rejection") or ""
+print("data_source", DATA_SOURCE)
+print("data_dir", PIT)
 '''
     audit = '''import json
 import subprocess
@@ -121,6 +137,9 @@ completed = subprocess.run([
     "--data-dir", PIT,
     "--output-dir", OUTPUT,
     "--audit-only",
+    "--data-source", DATA_SOURCE,
+    "--data-source-path", DATA_SOURCE_PATH,
+    "--reuse-rejection", REUSE_REJECTION,
 ], cwd="/kaggle/working/stock_train")
 report = json.loads(Path(OUTPUT, "audit_report.json").read_text(encoding="utf-8"))
 print("strict_ready", report["strict_ready"])
@@ -137,6 +156,9 @@ completed = subprocess.run([
     sys.executable, "-m", "research.reliability.strict_run",
     "--data-dir", PIT,
     "--output-dir", OUTPUT,
+    "--data-source", DATA_SOURCE,
+    "--data-source-path", DATA_SOURCE_PATH,
+    "--reuse-rejection", REUSE_REJECTION,
 ], cwd="/kaggle/working/stock_train")
 print("returncode", completed.returncode)
 summary_path = Path(OUTPUT, "summary.json")
@@ -155,6 +177,11 @@ print("models", summary.get("models"))
 print("feature_map", summary.get("feature_map"))
 print("replaces_v4", summary.get("replaces_v4"))
 print("holding_steps", summary.get("holding_steps"))
+print("data_source", summary.get("data_source"))
+print("seeds", summary.get("seeds"))
+print("early_stop", summary.get("early_stop"))
+print("nav_metrics_gated", summary.get("nav_metrics_gated"))
+print(summary.get("sharpe_formula"))
 print(summary.get("limitation"))
 '''
     return {
