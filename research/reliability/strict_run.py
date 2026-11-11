@@ -9,6 +9,7 @@ import os
 import random
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +30,7 @@ from research.reliability.fetch_pit import END, START
 from research.reliability.folds import FOLDS
 from research.reliability.holding import rebalance_signals
 from research.reliability.ledger import run_account
+from research.reliability.preprocess import prepare_fold
 
 MODELS = ("equal_weight", "ridge", "tree", "transformer")
 STRESS = (1, 2, 3)
@@ -124,6 +126,22 @@ def _weights(kind: str, sample: dict, fitted, device) -> dict[str, float]:
     if kind == "equal_weight":
         return equal_weights(sample["codes"])
     return _ranked(sample["codes"], _scores(kind, sample, fitted, device))
+
+
+def _count_nonfinite_scores(kind: str, samples: list[dict], fitted, device) -> int:
+    if kind == "equal_weight" or fitted is None or not samples:
+        return 0
+    total = 0
+    for sample in samples:
+        scores = np.asarray(_scores(kind, sample, fitted, device))
+        total += int(scores.size - np.isfinite(scores).sum())
+    return total
+
+
+def _last_rows(samples: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    features = np.concatenate([np.asarray(sample["x"])[:, -1, :] for sample in samples]).astype(np.float64)
+    labels = np.concatenate([np.asarray(sample["train_target"]) for sample in samples]).astype(np.float64)
+    return features, labels
 
 
 def _inner_split(train_samples: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -345,6 +363,7 @@ def run_strict(
     fold_list = list(FOLDS if folds is None else folds)
     dev_reports = []
     test_reports = []
+    feature_diagnostics = []
     fitted = {}
     for fold in fold_list:
         if time.monotonic() >= deadline:
@@ -352,19 +371,68 @@ def run_strict(
         parts = split_fold(samples, fold)
         if not parts["train"]:
             raise RuntimeError(f"fold {fold['id']} has no training samples")
-        dev_samples = _selected(calendar, parts["dev"])
-        test_samples = _selected(calendar, parts["test"])
-        features = np.nan_to_num(np.concatenate([sample["x"][:, -1, :] for sample in parts["train"]]).astype(np.float64))
-        labels = np.nan_to_num(np.concatenate([sample["train_target"] for sample in parts["train"]]).astype(np.float64))
+        raw_dev = _selected(calendar, parts["dev"])
+        raw_test = _selected(calendar, parts["test"])
+        cleaned_train, cleaned_dev, cleaned_test, feature_report = prepare_fold(parts["train"], parts["dev"], parts["test"], min_names)
+        dev_samples = _selected(calendar, cleaned_dev)
+        test_samples = _selected(calendar, cleaned_test)
+        features, labels = _last_rows(cleaned_train)
         fitted[("ridge", fold["id"])] = fit_linear(features, labels)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            raw_features, raw_labels = _last_rows(parts["train"])
+            raw_ridge = fit_linear(np.nan_to_num(raw_features), np.nan_to_num(raw_labels))
+        ridge_before = _count_nonfinite_scores("ridge", raw_dev, raw_ridge, device) + _count_nonfinite_scores("ridge", raw_test, raw_ridge, device)
+        ridge_after = _count_nonfinite_scores("ridge", dev_samples, fitted[("ridge", fold["id"])], device) + _count_nonfinite_scores("ridge", test_samples, fitted[("ridge", fold["id"])], device)
+        fold_diag = {
+            "fold": fold["id"],
+            **feature_report,
+            "score_count_definition": (
+                "nonfinite_scores_before counts Ridge and the tree fit on the uncleaned training rows and scored on the uncleaned dev/test windows. "
+                "For the transformer it is one eval forward, under that seed, of an untrained network on the uncleaned window. "
+                "nonfinite_scores_after counts the production model on the cleaned window. Non-finite production scores still fail closed."
+            ),
+            "models": {
+                "equal_weight": {"nonfinite_scores_before": 0, "nonfinite_scores_after": 0},
+                "ridge": {"nonfinite_scores_before": ridge_before, "nonfinite_scores_after": ridge_after},
+            },
+        }
         for seed in seeds:
             if time.monotonic() >= deadline:
                 return _fail(output, audit, "abstain", "stopped_before_12h", strict=True)
             _seed(int(seed))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                raw_tree = fit_tree(np.nan_to_num(raw_features), np.nan_to_num(raw_labels), seed=int(seed))
+            tree_before = _count_nonfinite_scores("tree", raw_dev, raw_tree, device) + _count_nonfinite_scores("tree", raw_test, raw_tree, device)
             fitted[("tree", fold["id"], seed)] = fit_tree(features, labels, seed=int(seed))
+            tree_after = _count_nonfinite_scores("tree", dev_samples, fitted[("tree", fold["id"], seed)], device) + _count_nonfinite_scores("tree", test_samples, fitted[("tree", fold["id"], seed)], device)
+            _seed(int(seed))
+            from config import config as model_config
 
-            transformer, train_meta = _train_transformer(parts["train"], int(seed), max_epochs, patience, device, deadline)
+            probe = build_model(
+                "transformer",
+                int(cleaned_train[0]["x"].shape[-1]),
+                num_stocks=int(cleaned_train[0]["x"].shape[0]),
+                config=model_config,
+            )
+            probe.to(device)
+            transformer_before = _count_nonfinite_scores("transformer", raw_dev, probe, device) + _count_nonfinite_scores("transformer", raw_test, probe, device)
+            del probe
+            transformer, train_meta = _train_transformer(cleaned_train, int(seed), max_epochs, patience, device, deadline)
             fitted[("transformer", fold["id"], seed)] = (transformer, train_meta)
+            transformer_after = _count_nonfinite_scores("transformer", dev_samples, transformer, device) + _count_nonfinite_scores("transformer", test_samples, transformer, device)
+            fold_diag["models"]["tree"] = fold_diag["models"].get("tree", {})
+            fold_diag["models"]["tree"][str(seed)] = {"nonfinite_scores_before": tree_before, "nonfinite_scores_after": tree_after}
+            fold_diag["models"]["transformer"] = fold_diag["models"].get("transformer", {})
+            fold_diag["models"]["transformer"][str(seed)] = {"nonfinite_scores_before": transformer_before, "nonfinite_scores_after": transformer_after}
+            (output / f"fold_{fold['id']}_diagnostics.json").write_text(json.dumps(fold_diag, ensure_ascii=False, indent=2), encoding="utf-8")
+            score_counts = {
+                "equal_weight": fold_diag["models"]["equal_weight"],
+                "ridge": fold_diag["models"]["ridge"],
+                "tree": fold_diag["models"]["tree"][str(seed)],
+                "transformer": fold_diag["models"]["transformer"][str(seed)],
+            }
             predictors = {
                 "equal_weight": None,
                 "ridge": fitted[("ridge", fold["id"])],
@@ -413,9 +481,16 @@ def run_strict(
                             "sharpe_annualized": metrics["sharpe_annualized"],
                             "average_turnover": metrics["average_turnover"],
                             "total_fees": metrics["total_fees"],
+                            "nonfinite_features_before": feature_report["nonfinite_features_before"],
+                            "nonfinite_features_after": feature_report["nonfinite_features_after"],
+                            "max_abs_feature_before": feature_report["max_abs_feature_before"],
+                            "max_abs_feature_after": feature_report["max_abs_feature_after"],
+                            "nonfinite_scores_before": score_counts[kind]["nonfinite_scores_before"],
+                            "nonfinite_scores_after": score_counts[kind]["nonfinite_scores_after"],
                             "split": split_name,
                         }
                     )
+        feature_diagnostics.append(fold_diag)
     decision = choose("strict", True, dev_reports)
     result = {
         "trained": True,
@@ -444,9 +519,10 @@ def run_strict(
         "data_source_path": source_path,
         "reuse_rejection": reuse_rejection,
         "evidence_grade": "already_observed" if all(fold.get("evidence_grade") == "already_observed" for fold in fold_list) else "smoke",
+        "feature_diagnostics": feature_diagnostics,
         "dev_reports": dev_reports,
         "test_reports": test_reports,
-        "limitation": "标签是不复权开盘到开盘收益。持有期内的分红除权没有再用后复权修正。Transformer 早停只用训练集内部最后 20% 信号日的 top-5 标签均值，不看折的开发验证或测试，也没有按这两段调过学习率、dropout 或深度。这些日期已经被看过两次，证据等级保持 already_observed（本折标明 smoke 时除外）。这不是独立最终测试，也不替换 v4。",
+        "limitation": "标签是不复权开盘到开盘收益。持有期内的分红除权没有再用后复权修正。特征在训练折上估计均值和标准差，标准差下限 1e-6，标准化后再截断到 ±10，开发验证和测试只用这组统计量。Transformer 早停只用训练集内部最后 20% 信号日的 top-5 标签均值，不看折的开发验证或测试，也没有按这两段调过学习率、dropout 或深度。这些日期已经被看过两次，证据等级保持 already_observed（本折标明 smoke 时除外）。这不是独立最终测试，也不替换 v4。",
     }
     if enable_memory:
         result["memory"] = "requested but this run does not add a new memory search"

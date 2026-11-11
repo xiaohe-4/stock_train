@@ -90,8 +90,12 @@ def test_tiny_strict_run_writes_every_blotter(tmp_path):
     assert "sqrt(252)" in summary["sharpe_formula"]
     transformer_rows = [row for row in summary["dev_reports"] if row["model"] == "transformer"]
     assert {row["seed"] for row in transformer_rows} == {42, 123}
+    assert summary["feature_diagnostics"]
+    assert (tmp_path / "out" / "fold_S_diagnostics.json").is_file()
     for row in summary["dev_reports"] + summary["test_reports"]:
         assert isinstance(row["stress_excess_3x"], float)
+        assert row["nonfinite_features_after"] == 0
+        assert row["nonfinite_scores_after"] == 0
         assert isinstance(row["cumulative_return"], float)
         assert isinstance(row["benchmark_cumulative_return"], float)
         assert isinstance(row["max_drawdown"], float)

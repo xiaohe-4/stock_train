@@ -125,3 +125,13 @@ Kaggle 上一次严格运行已经完成：notebook `caihuasheng/hs300-reliabili
 可选的预先声明改动只有一项：Transformer 早停不再使用折的开发验证账户超额。训练集按信号日排序后，最后 20% 的日期作为内部验证，只在更早的日期上做梯度步骤。早停指标是内部验证日上、按固定 top-5 权重加权的训练标签均值。patience 和最大学习轮数不变，没有按已经看到的开发验证或测试去调学习率、dropout 或深度。这些日期已经被看过两次，所以正式折的 `evidence_grade` 仍是 `already_observed`。
 
 点时数据可以复用。`fetch_pit --reuse-search` 在给定目录（笔记本里是 `/kaggle/input`）下查找带 `calendar.json` 和 `membership/` 的 `manifest.json`，优先路径里含 `hs300_reliability` 的那份。每个文件的 sha256 必须和 manifest 一致，而且日历要盖住所需的起止日期。通过就直接读那份目录，不改输入里的 manifest；这次报告的 `data_source` 写 `reused`。不通过就按原来的方式下载到输出目录，manifest 写 `data_source=downloaded`，并在报告里留下拒绝原因。复用之后仍然先审计，审计失败就停止，不会当成严格数据。
+
+## 2026-11-11 非有限分数
+
+Kaggle `hs300-reliability-opt`（提交 `d88427f`，scriptVersionId 368278599）在 329 秒失败。审计已经通过，`data_source=reused`，689 个交易日。Ridge 拟合打出 `LinAlgWarning`，`rcond=1.31e-23`。约 78 秒后，第一折、第一颗种子在构建持仓时触发 `non-finite scores are not ranked`。
+
+根因不是排序器。停牌日成交量为 0 时，`VMA`/`VSTD` 用 `1e-12` 做分母，得到大约 `1e20` 的有限数；`成交额` 和 `OBV` 也远大于比例类特征。这些值把 Transformer 的注意力打成 NaN。Ridge 的 `alpha=1` 相对这个量级没有作用，所以矩阵病态。本地用同样的特征函数复现了：特征里没有 NaN，最大值超过 `1e10`，Transformer 前向全是 NaN；标准化并截断之后分数有限。
+
+因此上一次完整运行（scriptVersionId 368132794，提交 `32176c31`）的 Transformer 账面无效：当时非有限分数会被稳定排序成与种子无关的持仓。Ridge 用的是同一份未缩放特征，那次拟合在数值上不可靠，也视为无效。树模型按阈值分裂，不依赖这组全局尺度，而且当时确实随种子变化，这次失败不能说明树的结果无效。等权不使用特征。
+
+修正：非有限标签或整段窗口都没有有限值的股票从当天剔除，人数不够的日期整日剔除。均值和标准差只在该折训练集的有限值上估计，标准差低于 `1e-6` 时用 `1e-6`。标准化后截断到 ±10。这个截断是事先定的，没有用开发验证或测试去选。Ridge 的 `alpha` 仍是 1.0。`_ranked` 遇到非有限分数继续失败。每个折的诊断写出清洗前后的非有限特征个数、绝对最大值，以及每个模型清洗前后的非有限分数个数。
